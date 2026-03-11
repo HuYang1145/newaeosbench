@@ -1,4 +1,4 @@
-environment = dict(world_size=0)
+environment = dict(world_size=0, split='train')
 
 algorithm = dict(
     n_steps=20,

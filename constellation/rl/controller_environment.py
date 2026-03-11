@@ -264,12 +264,21 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
 
         task_ids = (action[:_controller.environment.num_satellites]
                     - 1).tolist()
-        
-        # print("task_ids:", task_ids)
+
+        # 记录动作前的状态
+        prev_succeeded = _controller.task_manager.num_succeeded_tasks
+        prev_power = sum(sat.power_usage for sat in _controller.environment.get_constellation())
 
         self._take_actions(task_ids)
 
-        self._last_num_succeeded_tasks = _controller.task_manager.num_succeeded_tasks
+        # 计算奖励
+        new_succeeded = _controller.task_manager.num_succeeded_tasks
+        new_power = sum(sat.power_usage for sat in _controller.environment.get_constellation())
+
+        # 奖励 = 完成任务数 * 100 - 功耗增量 * 0.01
+        reward = (new_succeeded - prev_succeeded) * 100.0 - (new_power - prev_power) * 0.01
+
+        self._last_num_succeeded_tasks = new_succeeded
 
         terminated = _controller.task_manager.all_closed
         truncated = _controller.environment.timer.time >= 3600

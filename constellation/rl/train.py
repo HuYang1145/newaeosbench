@@ -11,7 +11,7 @@ from todd.patches.py_ import DictAction, descendant_classes
 from todd.utils import init_seed
 from todd.bases.registries import Item
 
-from .environment import Environment
+from .controller_environment import ControllerEnvironment as Environment
 from .policy import Policy
 
 
@@ -55,7 +55,7 @@ def main() -> None:
     for custom_import in config.get('custom_imports', []):
         importlib.import_module(custom_import)
 
-    environment = Environment.build(config.environment.world_size)
+    environment = Environment.build(**config.environment)
 
     algorithm = PPO(
         Policy,

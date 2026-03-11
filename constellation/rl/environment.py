@@ -218,14 +218,14 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         npt.NDArray[np.uint8],
         npt.NDArray[np.float32],
     ]:
-        sensor_type, static_data = self._task_manager.valid_tasks.to_tensor()
+        sensor_type, static_data = self._task_manager.ongoing_tasks.to_tensor()
 
         static_data = static_data.clone()
         t = self._simulator.timer.time
         static_data[..., 0] -= t
         static_data[..., 1] -= t
 
-        progress = self._task_manager.progress[self._task_manager.valid_labels]
+        progress = self._task_manager.progress[self._task_manager.ongoing_flags]
         dynamic_data = einops.rearrange(progress, 'nt -> nt 1')
 
         data = torch.cat([static_data, dynamic_data], -1)
@@ -244,7 +244,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
 
         observation = Observation(
             num_satellites=self._simulator.num_satellites,
-            num_tasks=self._task_manager.num_valid_tasks,
+            num_tasks=self._task_manager.num_ongoing_tasks,
             time_step=self._simulator.timer.time,
             constellation_sensor_type=cast(
                 npt.NDArray[np.uint8],
@@ -276,7 +276,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         # 1 1 -> 1
         # toggles = [self._simulator.timer.time == 0 for _ in task_ids]
 
-        tasks = self._task_manager.valid_tasks
+        tasks = self._task_manager.ongoing_tasks
         target_locations = [
             None if task_id == -1 else tasks[task_id].coordinate
             for task_id in task_ids
@@ -302,7 +302,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         self._simulator.take_actions(actions)
         self._simulator.timer.step()
 
-        self.evaluator_log_progress(task_ids)
+        # self.evaluator_log_progress(task_ids)  # Evaluator 没有 log_progress 方法
 
     def _skip_idle(self) -> None:
         while self._task_manager.is_idle:
@@ -346,9 +346,6 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
 
         self._evaluators: list[BaseEvaluator] = [
             CompletionRateEvaluator(),
-            PCompletionRateEvaluator(),
-            WCompletionRateEvaluator(),
-            WPCompletionRateEvaluator(),
             TurnAroundTimeEvaluator(),
             PowerUsageEvaluator()
         ]
@@ -366,15 +363,16 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         task_ids = action[:self._simulator.num_satellites] - 1
         self._take_actions(task_ids.tolist())
 
-        tasks = self._task_manager.tasks
+        tasks = self._task_manager.taskset
         is_visible = self._simulator.is_visible(tasks)
         completed = self._task_manager.record(is_visible)
 
         # TODO: design better reward
         reward = 0.
-        reward += completed.numel() * 100
+        if completed is not None:
+            reward += completed.numel() * 100
 
-        is_visible[:, ~self._task_manager.valid_labels] = False
+        is_visible[:, ~self._task_manager.ongoing_flags] = False
         num_visible_satellites = is_visible.any(1).sum().item()
         reward += 2 * num_visible_satellites - is_visible.shape[0]
         reward /= 10
@@ -382,7 +380,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         self._skip_idle()
 
         # NOTE: test after skipping idle
-        terminated = self._task_manager.is_finished
+        terminated = self._task_manager.all_closed
         truncated = self._simulator.timer.time >= self._simulator.end_time
 
         observation = (

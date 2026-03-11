@@ -27,7 +27,6 @@ class TaskManager:
         taskset: TaskSet,
         **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
         self._timer = timer
         self._taskset = taskset
 

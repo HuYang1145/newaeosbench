@@ -8,8 +8,34 @@ This repository is the official implementation of "Towards Realistic Earth-Obser
 ## Installation
 
 ```bash
-sudo apt install ffmpeg libpq-dev
+sudo apt install ffmpeg libpq-dev swig
 bash setup.sh
+```
+
+### Known Issues and Solutions
+
+#### Basilisk Version Compatibility
+
+**Issue**: The project requires Basilisk version compatible with numpy 1.x (required by todd-ai), but newer Basilisk versions require numpy 2.0+.
+
+**Solution**: Use Basilisk commit `786cb285d` (last version before numpy 2.0 support). This is automatically handled in `setup.sh`.
+
+#### lvis-api Dependency
+
+**Issue**: todd-ai requires `lvis-api` with `boundary_utils` module, which is not available in PyPI version.
+
+**Solution**: Install from GitHub source:
+```bash
+pip install git+https://github.com/lvis-dataset/lvis-api.git@lvis_challenge_2021 --no-build-isolation
+```
+
+#### pytest-html Missing
+
+**Issue**: Basilisk compilation requires `pytest-html` package.
+
+**Solution**: Install before compiling Basilisk:
+```bash
+pip install pytest-html
 ```
 
 ## data
@@ -80,6 +106,69 @@ Use the command below to evaluate the model:
 CUDA_VISIBLE_DEVICES=0 WORLD_SIZE=1 RANK=0 python -m constellation.rl.eval_all \
     work_dir_name \
     constellation/rl/config_eval.py \
-    --load-model-from 'work_dirs/test/checkpoints/iter_100000/model.pth'
+    --load-model-from 'work_dirs/test/checkpoints/iter_200000/model.pth'
+```
+
+### 4. Baseline Evaluation
+
+Run baseline algorithms (OptimalAlgorithm) for comparison:
+
+```bash
+# Single process
+PYTHONPATH=. python tools/test_baseline.py baseline_optimal 0
+
+# Multi-process (4 workers)
+PYTHONPATH=. python tools/test_baseline.py baseline_optimal 4
+```
+
+## Results
+
+### Transformer Model (iter_200000)
+
+| Split | Scenarios | CR (%) | PCR (%) | TAT (s) |
+|-------|-----------|--------|---------|---------|
+| Val Seen | 32 | 37 | 40 | 575.6 |
+| Val Unseen | 16 | 39 | 42 | 540.6 |
+| Test | 64 | Running | - | - |
+
+### Baseline (OptimalAlgorithm)
+
+| Split | Scenarios | Status |
+|-------|-----------|--------|
+| Val Seen | 32 | Running |
+| Val Unseen | 32 | Pending |
+| Test | 64 | Pending |
+
+**Note**: Baseline evaluation is currently in progress. Results will be updated upon completion.
+
+## Project Structure
+
+```
+.
+├── constellation/          # Core source code
+│   ├── algorithms/        # Scheduling algorithms (Optimal, Replay, etc.)
+│   ├── callbacks/         # Training callbacks
+│   ├── data/             # Data structures (Constellation, Task, etc.)
+│   ├── environments/     # Basilisk simulation environment
+│   ├── evaluators/       # Evaluation metrics (CR, TAT, Power)
+│   ├── new_transformers/ # Transformer model implementation
+│   ├── rl/              # RL training (PPO) and evaluation
+│   └── task_managers.py  # Task scheduling management
+├── data/                 # Dataset (not in git)
+│   ├── annotations/      # Train/val/test split definitions
+│   ├── constellations/   # Satellite constellation configs
+│   ├── tasksets/        # Observation task definitions
+│   └── trajectories.*/  # Pre-computed trajectories
+├── tools/               # Utility scripts
+│   └── test_baseline.py # Baseline algorithm evaluation
+├── work_dirs/           # Training outputs (not in git)
+│   ├── test/           # Main training run
+│   │   └── checkpoints/ # Model checkpoints (iter_100000, iter_200000)
+│   ├── rl_eval_*/      # Evaluation results
+│   └── test_baseline/  # Baseline evaluation results
+├── archive_logs/        # Historical evaluation logs
+├── third_party/         # External dependencies
+│   └── basilisk/       # Spacecraft simulation framework
+└── EVALUATION_RESULTS.md # Consolidated evaluation results
 ```
 

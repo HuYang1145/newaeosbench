@@ -8,7 +8,7 @@ import todd
 from todd.patches.py_ import json_dump, json_load
 
 from constellation import CONSTELLATIONS_ROOT, TASKSETS_ROOT, TRAJECTORIES_ROOT
-from constellation.algorithms import TabuOptimalAlgorithm
+from constellation.algorithms import OptimalAlgorithm
 from constellation import ANNOTATIONS_ROOT
 from constellation.algorithms.replay import ReplayAlgorithm
 from constellation.controller import Controller
@@ -16,12 +16,11 @@ from constellation.data import Constellation, Task, TaskSet
 from constellation.environments import BasiliskEnvironment
 from constellation.evaluators import (
     CompletionRateEvaluator,
-    PCompletionRateEvaluator,
     PowerUsageEvaluator,
     TurnAroundTimeEvaluator,
-    WCompletionRateEvaluator,
-    WPCompletionRateEvaluator,
 )
+from constellation import TaskManager
+from constellation.callbacks import ComposedCallback
 
 MAX_RETRY = 1
 
@@ -47,30 +46,50 @@ def test(work_dir: pathlib.Path, split: str, i: int) -> list[float] | None:
         constellation=constellation,
         all_tasks=taskset,
     )
-    # algorithm = TabuOptimalAlgorithm(
-    #     timer=environment.timer,
-    #     tabu_path=None,
-    #     angle=np.pi / 3.15,
-    # )
-    algorithm = ReplayAlgorithm(timer=environment.timer, split=split, i=i)
+    algorithm = OptimalAlgorithm(timer=environment.timer)
+
+    task_manager = TaskManager(timer=environment.timer, taskset=taskset)
+
     evaluators = [
         CompletionRateEvaluator(),
-        PCompletionRateEvaluator(),
-        WCompletionRateEvaluator(),
-        WPCompletionRateEvaluator(),
         TurnAroundTimeEvaluator(),
         PowerUsageEvaluator(),
     ]
-    controller = Controller(exp_name="exp", evaluators=evaluators)
 
-    metrics = controller.run(
-        environment,
-        algorithm,
-        taskset,
-        None,
+    controller = Controller(
+        name="baseline",
+        environment=environment,
+        task_manager=task_manager,
+        callbacks=ComposedCallback(callbacks=evaluators),
     )
 
-    json_dump(metrics, str(result_path))
+    algorithm.prepare(environment, task_manager)
+    evaluators[0].before_run()
+    evaluators[1].before_run()
+    evaluators[2].before_run()
+
+    controller.run(algorithm)
+
+    evaluators[0].after_run()
+    evaluators[1].after_run()
+    evaluators[2].after_run()
+
+    metrics = controller.memo
+
+    # Convert tensors to native Python types and filter out non-serializable objects
+    metrics_serializable = {}
+    for k, v in metrics.items():
+        # Skip non-serializable objects
+        if k in ['algorithm', 'actions', 'assignment', 'is_visible']:
+            continue
+        if hasattr(v, 'tolist'):
+            metrics_serializable[k] = v.tolist()
+        elif hasattr(v, 'item'):
+            metrics_serializable[k] = v.item()
+        elif isinstance(v, (int, float, str, bool, list, dict, type(None))):
+            metrics_serializable[k] = v
+
+    json_dump(metrics_serializable, str(result_path))
 
     todd.logger.info(f"{split=} {i=} {metrics=}")
     return metrics

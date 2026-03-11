@@ -18,7 +18,7 @@ class BaseEnvironment(ABC):
         start_time: int = 0,
         **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__()
         timer = Timer(start_time)
         self._timer = timer
 

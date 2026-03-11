@@ -49,7 +49,7 @@ class EvalEnvironment(ControllerEnvironment):
                 gen_trajectory_dir=gen_trajectory_dir,
                 **kwargs,
             ) for i in range(world_size)
-        ])
+        ], start_method='spawn')
 
     def __init__(
         self,

@@ -49,7 +49,7 @@ trainer = dict(
         type='ConstellationDatasetRegistry.Dataset',
         annotation_file='train.json',
         split='train',
-        batch_size=48,
+        batch_size=24,  # ORIGINAL: 48 - 临时修改为24以适应GPU显存
     ),
     dataloader=dict(
         type='PrefetchDataLoader',

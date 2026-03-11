@@ -21,5 +21,8 @@ pipenv run pip install \
 
 cd third_party/basilisk
 sudo apt install swig
-# git checkout c3624e0
-# CMAKE_TLS_VERIFY=0 pipenv run python conanfile.py
+# Checkout to version 786cb285d (last version before numpy 2.0 support)c3624e0fe9d79c2be705b1c587ba88e34f8061ff
+# This version is compatible with numpy 1.x required by todd-ai
+git checkout 786cb285d
+pip install pytest-html
+CMAKE_TLS_VERIFY=0 python conanfile.py
