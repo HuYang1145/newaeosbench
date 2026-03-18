@@ -3,10 +3,12 @@
     "python.analysis.exclude": [
         "third_party/**"
     ],
-    "python-envs.defaultEnvManager": "ms-python.python:pipenv",
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.pythonProjects": [],
+    "python.terminal.activateEnvironment": false,
     "cSpell.words": [
         "taskset",
         "tasksets"
-    ]
+    ],
+    "cmake.ignoreCMakeListsMissing": true
 }

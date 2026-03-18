@@ -93,6 +93,7 @@ class DecoderBlock(Block):
         *args,
         width: int,
         num_heads: int,
+        use_sdpa: bool = False,  # 使用 PyTorch 内置的优化 Attention
         **kwargs,
     ) -> None:
         super().__init__(*args, width=width, num_heads=num_heads, **kwargs)
@@ -102,6 +103,7 @@ class DecoderBlock(Block):
             num_heads,
             batch_first=True,
         )
+        self._use_sdpa = use_sdpa
 
     def forward(  # type: ignore[override]
         self,
@@ -114,13 +116,25 @@ class DecoderBlock(Block):
         x = super().forward(x, attention_mask)
 
         norm = self._norm3(x)
-        cross_attention, _ = self._cross_attention(
-            norm,
-            hidden_states,
-            hidden_states,
-            need_weights=False,
-            attn_mask=cross_attention_mask,
-        )
+
+        # 使用 SDPA（自动选择 Flash Attention 或其他优化实现）
+        if self._use_sdpa:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                cross_attention, _ = self._cross_attention(
+                    norm,
+                    hidden_states,
+                    hidden_states,
+                    need_weights=False,
+                    attn_mask=cross_attention_mask,
+                )
+        else:
+            cross_attention, _ = self._cross_attention(
+                norm,
+                hidden_states,
+                hidden_states,
+                need_weights=False,
+                attn_mask=cross_attention_mask,
+            )
         x = x + cross_attention
 
         return x
@@ -140,6 +154,7 @@ class Decoder(InitWeightsMixin, nn.Module):
         depth: int,
         num_heads: int,
         return_logits: bool,
+        use_sdpa: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -159,7 +174,7 @@ class Decoder(InitWeightsMixin, nn.Module):
 
         self._blocks = Sequential(
             *[
-                DecoderBlock(width=width, num_heads=num_heads)
+                DecoderBlock(width=width, num_heads=num_heads, use_sdpa=use_sdpa)
                 for _ in range(depth)
             ],
         )
@@ -268,6 +283,7 @@ class Transformer(nn.Module):
         decoder_depth: int,
         decoder_num_heads: int,
         return_logits: bool = True,
+        use_sdpa: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -300,6 +316,7 @@ class Transformer(nn.Module):
             depth=decoder_depth,
             num_heads=decoder_num_heads,
             return_logits=return_logits,
+            use_sdpa=use_sdpa,
         )
         self._time_model = TimeModel()
         self._time_projection = nn.Linear(1, 1)
@@ -405,6 +422,8 @@ class Model(nn.Module):
         decoder_width: int = 512,
         decoder_depth: int = 12,
         decoder_num_heads: int = 16,
+        use_compile: bool = False,
+        use_sdpa: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -419,7 +438,28 @@ class Model(nn.Module):
             decoder_width=decoder_width,
             decoder_depth=decoder_depth,
             decoder_num_heads=decoder_num_heads,
+            use_sdpa=use_sdpa,
         )
+
+        # torch.compile 加速（PyTorch 2.0+）
+        if use_compile:
+            import os
+            import torch._inductor.config as inductor_config
+
+            # 添加 libcuda.so 路径到链接器
+            user_lib = os.path.expanduser('~/.local/lib')
+            inductor_config.cpp_wrapper = True
+
+            # 修改环境变量
+            os.environ['LIBRARY_PATH'] = f"{user_lib}:/lib/x86_64-linux-gnu:" + os.environ.get('LIBRARY_PATH', '')
+            os.environ['LD_LIBRARY_PATH'] = f"{user_lib}:/lib/x86_64-linux-gnu:" + os.environ.get('LD_LIBRARY_PATH', '')
+
+            self._transformer = torch.compile(
+                self._transformer,
+                mode='reduce-overhead',
+                fullgraph=False,
+            )
+
         self._ce_loss = CrossEntropyLoss()
 
     def predict(self, *args, **kwargs) -> torch.Tensor:

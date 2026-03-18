@@ -2,13 +2,10 @@ strategy = dict(type='DDPStrategy')
 model = dict(
     type='ConstellationModelRegistry.Model',
     use_compile=False,
-    use_sdpa=True,
 )
 
-custom_imports = ['constellation.new_transformers.early_stopping']
-
-iters = 200_000
-warmup_iters = 10_000
+iters = 1  # 只运行1次迭代
+warmup_iters = 0
 trainer = dict(
     type='IterBasedTrainer',
     model=model,
@@ -23,20 +20,20 @@ trainer = dict(
                     dict(
                         type='LinearLR',
                         start_factor=1e-8,
-                        total_iters=warmup_iters - 1,
+                        total_iters=1,
                     ),
                     dict(
                         type='CosineAnnealingLR',
-                        T_max=iters - warmup_iters,
+                        T_max=1,
                         eta_min=5e-6,
                     ),
                 ],
-                milestones=[warmup_iters],
+                milestones=[1],
             ),
         ),
         dict(
             type='LogCallback',
-            interval=50,
+            interval=1,
             collect_env=dict(),
             with_file_handler=True,
             eta=dict(type='EMA_ETA', ema=dict(decay=0.9)),
@@ -45,23 +42,22 @@ trainer = dict(
         dict(type='GitCallback', diff='HEAD'),
         dict(
             type='TensorBoardCallback',
-            interval=50,
+            interval=1,
             summary_writer=dict(),
             main_tag='train',
         ),
         dict(type='CheckpointCallback', interval=1e4),
-        dict(type='EarlyStoppingCallback', patience=10, delta=0.001),
     ],
     dataset=dict(
         type='ConstellationDatasetRegistry.Dataset',
         annotation_file='train.json',
         split='train',
-        batch_size=96,  # 优化配置：增大batch提升速度
+        batch_size=2,  # 小批量测试
     ),
     dataloader=dict(
         type='PrefetchDataLoader',
         batch_size=None,
-        num_workers=4,  # 增加数据加载并行度
+        num_workers=2,
         sampler=dict(type='DistributedSampler', shuffle=True),
     ),
     optimizer=dict(
@@ -70,7 +66,6 @@ trainer = dict(
         betas=(0.9, 0.98),
         weight_decay=1e-4,
         eps=1e-8,
-        fused=True,
     ),
     iters=iters,
 )
@@ -83,34 +78,22 @@ validator = dict(
             type='MetricCallback',
             metrics=dict(
                 loss=dict(
-                    type='ReadyMadeMetric',
-                    attr='["loss"]',
-                ),
-                accuracy=dict(
-                    type='AccuracyMetric',
-                    top_k=1,
-                    logits='["logits"]',
-                    target='["actions_task_id"]',
+                    type='Mean',
+                    value='loss',
                 ),
             ),
-        ),
-        dict(
-            type='LogCallback',
-            interval=50,
-            collect_env=dict(),
-            with_file_handler=True,
-            eta=dict(type='EMA_ETA', ema=dict(decay=0.9)),
         ),
     ],
     dataset=dict(
         type='ConstellationDatasetRegistry.Dataset',
+        annotation_file='val_seen.json',
         split='val_seen',
-        batch_size=512,
+        batch_size=2,
     ),
     dataloader=dict(
         type='PrefetchDataLoader',
         batch_size=None,
-        num_workers=0,
+        num_workers=2,
         sampler=dict(type='DistributedSampler', shuffle=False),
     ),
 )

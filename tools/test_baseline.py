@@ -76,18 +76,25 @@ def test(work_dir: pathlib.Path, split: str, i: int) -> list[float] | None:
 
     metrics = controller.memo
 
-    # Convert tensors to native Python types and filter out non-serializable objects
+    def to_serializable(obj):
+        if hasattr(obj, 'tolist'):
+            return obj.tolist()
+        elif hasattr(obj, 'item'):
+            return obj.item()
+        elif isinstance(obj, dict):
+            return {k: to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [to_serializable(item) for item in obj]
+        elif isinstance(obj, (int, float, str, bool, type(None))):
+            return obj
+        else:
+            return None
+
     metrics_serializable = {}
     for k, v in metrics.items():
-        # Skip non-serializable objects
         if k in ['algorithm', 'actions', 'assignment', 'is_visible']:
             continue
-        if hasattr(v, 'tolist'):
-            metrics_serializable[k] = v.tolist()
-        elif hasattr(v, 'item'):
-            metrics_serializable[k] = v.item()
-        elif isinstance(v, (int, float, str, bool, list, dict, type(None))):
-            metrics_serializable[k] = v
+        metrics_serializable[k] = to_serializable(v)
 
     json_dump(metrics_serializable, str(result_path))
 

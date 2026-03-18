@@ -398,6 +398,7 @@ class TimeModel(nn.Module):
         *args,
         input_dim: int = SATELLITE_DIM + TASK_DIM,
         time_embedding_dim: int = 64,
+        physics_dim: int = 4,
         hidden_dim: int = 1024,
         **kwargs,
     ):
@@ -408,7 +409,7 @@ class TimeModel(nn.Module):
         )
         self._time_embedding = nn.Parameter(time_embedding)
         self._mlp = nn.Sequential(
-            nn.Linear(input_dim + time_embedding_dim, hidden_dim),
+            nn.Linear(input_dim + time_embedding_dim + physics_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
@@ -422,18 +423,78 @@ class TimeModel(nn.Module):
         self._mse_loss = MSELoss()
         self._bce_loss = BCEWithLogitsLoss()
 
+        # 物理层参数
+        self._physics_warmup_iters = 1000
+        self._physics_max_weight = 0.5
+
+    def _differentiable_physics_layer(
+        self,
+        constellation_data: torch.Tensor,
+        tasks_data: torch.Tensor,
+    ) -> torch.Tensor:
+        """PINN物理层：数值稳定版本"""
+        # 1. MRP → 真实旋转角度
+        current_mrp = constellation_data[..., 53:56]
+        mrp_norm = torch.norm(current_mrp, p=2, dim=-1, keepdim=True)
+        attitude_angle = 4.0 * torch.atan(mrp_norm)
+
+        # 2. 惯性矩（归一化空间）
+        inertia_diag = torch.stack([
+            constellation_data[..., 0],
+            constellation_data[..., 4],
+            constellation_data[..., 8],
+        ], dim=-1)
+        max_inertia = torch.max(inertia_diag, dim=-1, keepdim=True)[0]
+
+        # 3. 反作用轮最大角动量（对数平滑）
+        max_momentum = torch.stack([
+            constellation_data[..., 29],
+            constellation_data[..., 35],
+            constellation_data[..., 41],
+        ], dim=-1)
+        max_torque = torch.norm(max_momentum, p=2, dim=-1, keepdim=True)
+        max_torque_log = torch.log1p(torch.abs(max_torque))
+
+        # 4. 理论最短时间（硬截断到合理范围）
+        theoretical_min_time = torch.clamp(
+            attitude_angle * max_inertia / (max_torque_log + 1.0),
+            min=0.0,
+            max=50.0
+        )
+
+        # 5. 任务紧急度
+        time_window = tasks_data[..., 1:2] - tasks_data[..., 0:1]
+        urgency = 1.0 / (time_window.abs() + 1.0)
+
+        return torch.cat([
+            attitude_angle,
+            max_torque_log,
+            theoretical_min_time,
+            urgency,
+        ], dim=-1)
+
     def _predict(
         self,
         time_steps: torch.Tensor | list[int],
         constellation_data: torch.Tensor,
         tasks_data: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         time_embedding = self._time_embedding[time_steps]
 
-        data = torch.cat([constellation_data, tasks_data, time_embedding], -1)
+        physics_features = self._differentiable_physics_layer(
+            constellation_data,
+            tasks_data
+        )
+
+        data = torch.cat([
+            constellation_data,
+            tasks_data,
+            time_embedding,
+            physics_features
+        ], -1)
         x: torch.Tensor = self._mlp(data)
         pred_time, pred_mask = x.unbind(-1)
-        return pred_time, pred_mask
+        return pred_time, pred_mask, physics_features
 
     def predict(
         self,
@@ -470,7 +531,7 @@ class TimeModel(nn.Module):
             ns=ns,
         )[mask]
 
-        pred_time, pred_mask = self._predict(
+        pred_time, pred_mask, _ = self._predict(
             time_steps,
             constellation_data,
             tasks_data,
@@ -497,7 +558,7 @@ class TimeModel(nn.Module):
 
         batch = Batch(*batch)  # for PrefetchDataLoader
 
-        pred_durations, pred_masks = self._predict(
+        pred_durations, pred_masks, physics_features = self._predict(
             batch.time_steps,
             batch.constellation_data,
             batch.tasks_data,
@@ -505,6 +566,15 @@ class TimeModel(nn.Module):
         memo.update(pred_mask=pred_masks)
 
         gt_masks = batch.durations >= 0
+
+        # 调试输出（仅第一次迭代）
+        if runner.iter == 0 and gt_masks.any():
+            theoretical_min_time = physics_features[..., 2]
+            print(f"\n=== 物理量纲检查 ===")
+            print(f"theoretical_min_time: {theoretical_min_time[gt_masks][:5]}")
+            print(f"batch.durations:      {batch.durations[gt_masks][:5]}")
+            print(f"physics_scale:        {self._physics_scale.item():.3f}")
+            print(f"==================\n")
 
         if gt_masks.any():
             mse_loss = self._mse_loss(
@@ -524,15 +594,33 @@ class TimeModel(nn.Module):
             ),
         )
 
+        # Physics Loss（带预热机制）
+        if gt_masks.any():
+            theoretical_min_time = physics_features[..., 2]
+            physics_violation = torch.relu(
+                theoretical_min_time[gt_masks] - pred_durations[gt_masks]
+            )
+            physics_loss = physics_violation.mean()
+
+            # 预热权重：前1000轮从0线性增长到max_weight
+            if runner.iter < self._physics_warmup_iters:
+                physics_weight = (runner.iter / self._physics_warmup_iters) * self._physics_max_weight
+            else:
+                physics_weight = self._physics_max_weight
+        else:
+            physics_loss = 0.
+            physics_weight = 0.
+
         memo.update(pred_masks=pred_masks, gt_masks=gt_masks)
 
-        loss = mse_loss + bce_loss * 2
+        loss = mse_loss + bce_loss * 2.0 + physics_loss * physics_weight
         memo['loss'] = loss
 
         tensors: dict[str, torch.Tensor] = dict(
             loss=loss,
             mse_loss=mse_loss,
             bce_loss=bce_loss,
+            physics_loss=physics_loss,
         )
         if log is not None:
             log.update({k: f'{v:.3f}' for k, v in tensors.items()})

@@ -281,7 +281,7 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         self._last_num_succeeded_tasks = new_succeeded
 
         terminated = _controller.task_manager.all_closed
-        truncated = _controller.environment.timer.time >= 3600
+        truncated = _controller.environment.timer.time >= MAX_TIME_STEP
         self._skip_idle(terminated or truncated)
 
         observation = (

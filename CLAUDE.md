@@ -78,6 +78,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **目的**：让用户快速了解修改了哪些文件和原因
 
+### 实验结果验证规则
+
+**每次完成训练或评估后，必须对比论文结果（`北航卫星.pdf`）：**
+
+1. 检查根目录下的 `北航卫星.pdf` 论文
+2. 对比我们的实验结果与论文 Table 2 中的数据
+3. 如果发现显著差异，向用户报告并分析可能原因
+
+**论文基准数据（Test 集）**：
+- AEOS-Former: CR=19.25%, PCR=22.31%, TAT=5.67h
+- MSCPO-SHCS: CR=19.44%, PCR=24.00%
+- OptimalAlgorithm (Baseline): 论文中未明确给出
+
+**验证目的**：确保复现结果与论文一致，及时发现配置或数据问题
+
 ## Project Overview
 
 This is a research codebase for Earth-Observation Constellation Scheduling, implementing transformer-based and RL-based approaches for satellite mission planning. The project uses Basilisk (a spacecraft simulation framework) as a third-party dependency.
@@ -206,6 +221,24 @@ The `data/` directory contains:
 - `orbits/`: Orbital parameters (JSON files)
 - `satellites/`: Satellite specifications
 - `tasksets/`: Observation task definitions
+
+**Data Verification Commands**:
+```bash
+# Check dataset sizes (correct method)
+python3 -c "import json; d=json.load(open('data/annotations/test.json')); print('test:', len(d['ids']))"
+python3 -c "import json; d=json.load(open('data/annotations/val_seen.json')); print('val_seen:', len(d['ids']))"
+python3 -c "import json; d=json.load(open('data/annotations/val_unseen.json')); print('val_unseen:', len(d['ids']))"
+python3 -c "import json; d=json.load(open('data/annotations/train.json')); print('train:', len(d['ids']))"
+
+# Check disk usage
+du -sh work_dirs data
+```
+
+**Expected sizes**:
+- test: 64 scenes
+- val_seen: 64 scenes
+- val_unseen: 64 scenes
+- train: 16159 scenes
 
 ### Dependencies
 
