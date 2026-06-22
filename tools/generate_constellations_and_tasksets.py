@@ -14,9 +14,12 @@ from tqdm import tqdm, trange
 
 from constellation import CONSTELLATIONS_ROOT, SATELLITES_ROOT, TASKSETS_ROOT
 from constellation.constants import MAX_OFF_NADIR_ANGLE, MAX_TIME_STEP
+from constellation.constants import MU_EARTH
 from constellation.constants import RADIUS_EARTH
 from constellation.data import Constellation, Satellite, Satellites, Task
 from constellation.data import TaskSet
+
+EARTH_ROTATION_RATE = 7.2921159e-5  # rad/s
 
 
 def load_satellites(split: str) -> Satellites:
@@ -76,32 +79,151 @@ def scan_observable_task_flags(
     *,
     max_time_step: int = MAX_TIME_STEP,
 ) -> list[bool]:
-    """用 Basilisk 扫描每个任务是否存在可完成的连续观测窗口。"""
-    from constellation.environments import BasiliskEnvironment
-
-    environment = BasiliskEnvironment(
-        constellation=constellation,
-        all_tasks=taskset,
+    """快速扫描每个任务是否存在可完成的连续观测窗口。"""
+    visibility_trace = _fast_geometric_visibility_trace(
+        constellation,
+        taskset,
+        max_time_step=max_time_step,
     )
+
+    return [
+        has_contiguous_observation_window(task, visibility_trace[:, i])
+        for i, task in enumerate(taskset)
+    ]
+
+
+def _fast_geometric_visibility_trace(
+    constellation: Constellation,
+    taskset: TaskSet,
+    *,
+    max_time_step: int = MAX_TIME_STEP,
+    chunk_size: int = 120,
+) -> torch.Tensor:
+    """不启动 Basilisk，仅用轨道传播和几何约束计算任务可见性。"""
+    satellites = constellation.sort()
+    satellite_sensor_type = torch.tensor(
+        [satellite.sensor.type_ for satellite in satellites],
+    )
+    task_sensor_type = torch.tensor([task.sensor_type for task in taskset])
+    mask_sensor = satellite_sensor_type.unsqueeze(1) == task_sensor_type
+
+    taskset_ecef = torch.tensor(taskset.coordinates_ecef, dtype=torch.float32)
     visibility_trace = torch.zeros(
         max_time_step,
         len(taskset),
         dtype=torch.bool,
     )
 
-    for time_step in range(max_time_step):
-        # 这里只筛选点位是否存在几何观测机会，不要求卫星当前姿态
-        # 已经指向目标，也不把初始传感器开关状态作为无解条件。
-        visibility_trace[time_step] = (
-            _geometric_accessibility(environment, taskset).any(0)
-        )
-        environment.timer.step()
-        environment.step()
+    for start in range(0, max_time_step, chunk_size):
+        stop = min(start + chunk_size, max_time_step)
+        times = torch.arange(start, stop, dtype=torch.float32)
 
-    return [
-        has_contiguous_observation_window(task, visibility_trace[:, i])
-        for i, task in enumerate(taskset)
-    ]
+        constellation_eci = _satellite_positions_eci(satellites, times)
+        taskset_eci = _task_positions_eci(taskset_ecef, times)
+        delta = taskset_eci.unsqueeze(1) - constellation_eci.unsqueeze(2)
+        distance = torch.norm(delta, dim=-1)
+        orbital_radius = torch.norm(constellation_eci, dim=-1).unsqueeze(-1)
+
+        mask_distance = distance < RADIUS_EARTH
+        cosine = (
+            (distance**2 + orbital_radius**2 - RADIUS_EARTH**2)
+            / (2 * distance.clamp_min(1e-6) * orbital_radius)
+        )
+        mask_off_nadir = cosine > math.cos(MAX_OFF_NADIR_ANGLE)
+        visibility_trace[start:stop] = (
+            mask_distance & mask_off_nadir & mask_sensor
+        ).any(1)
+
+    return visibility_trace
+
+
+def _satellite_positions_eci(
+    satellites: Satellites,
+    times: torch.Tensor,
+) -> torch.Tensor:
+    positions: list[torch.Tensor] = []
+    for satellite in satellites:
+        orbit = satellite.orbit
+        eccentricity = orbit.eccentricity
+        semi_major_axis = orbit.semi_major_axis
+        inclination = math.radians(orbit.inclination)
+        raan = math.radians(orbit.right_ascension_of_the_ascending_node)
+        argument_of_perigee = math.radians(orbit.argument_of_perigee)
+        true_anomaly = math.radians(satellite.true_anomaly)
+
+        initial_eccentric_anomaly = 2 * math.atan2(
+            math.sqrt(1 - eccentricity) * math.sin(true_anomaly / 2),
+            math.sqrt(1 + eccentricity) * math.cos(true_anomaly / 2),
+        )
+        initial_mean_anomaly = (
+            initial_eccentric_anomaly
+            - eccentricity * math.sin(initial_eccentric_anomaly)
+        )
+        mean_motion = math.sqrt(MU_EARTH / semi_major_axis**3)
+        mean_anomaly = (
+            initial_mean_anomaly + mean_motion * times
+        ).remainder(2 * math.pi)
+
+        eccentric_anomaly = mean_anomaly.clone()
+        for _ in range(5):
+            eccentric_anomaly = eccentric_anomaly - (
+                eccentric_anomaly
+                - eccentricity * torch.sin(eccentric_anomaly)
+                - mean_anomaly
+            ) / (1 - eccentricity * torch.cos(eccentric_anomaly))
+
+        x_perifocal = semi_major_axis * (
+            torch.cos(eccentric_anomaly) - eccentricity
+        )
+        y_perifocal = (
+            semi_major_axis
+            * math.sqrt(1 - eccentricity**2)
+            * torch.sin(eccentric_anomaly)
+        )
+
+        cos_raan = math.cos(raan)
+        sin_raan = math.sin(raan)
+        cos_arg = math.cos(argument_of_perigee)
+        sin_arg = math.sin(argument_of_perigee)
+        cos_inc = math.cos(inclination)
+        sin_inc = math.sin(inclination)
+
+        x_eci = (
+            (cos_raan * cos_arg - sin_raan * sin_arg * cos_inc)
+            * x_perifocal
+            + (-cos_raan * sin_arg - sin_raan * cos_arg * cos_inc)
+            * y_perifocal
+        )
+        y_eci = (
+            (sin_raan * cos_arg + cos_raan * sin_arg * cos_inc)
+            * x_perifocal
+            + (-sin_raan * sin_arg + cos_raan * cos_arg * cos_inc)
+            * y_perifocal
+        )
+        z_eci = (
+            sin_arg * sin_inc * x_perifocal
+            + cos_arg * sin_inc * y_perifocal
+        )
+        positions.append(torch.stack([x_eci, y_eci, z_eci], dim=-1))
+
+    return torch.stack(positions, dim=1)
+
+
+def _task_positions_eci(
+    taskset_ecef: torch.Tensor,
+    times: torch.Tensor,
+) -> torch.Tensor:
+    theta = EARTH_ROTATION_RATE * times
+    cos_theta = torch.cos(theta).unsqueeze(1)
+    sin_theta = torch.sin(theta).unsqueeze(1)
+
+    x_ecef = taskset_ecef[:, 0].unsqueeze(0)
+    y_ecef = taskset_ecef[:, 1].unsqueeze(0)
+    z_ecef = taskset_ecef[:, 2].unsqueeze(0).expand(len(times), -1)
+
+    x_eci = cos_theta * x_ecef - sin_theta * y_ecef
+    y_eci = sin_theta * x_ecef + cos_theta * y_ecef
+    return torch.stack([x_eci, y_eci, z_ecef], dim=-1)
 
 
 def _geometric_accessibility(

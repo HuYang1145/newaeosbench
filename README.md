@@ -382,7 +382,7 @@ data/tasksets/<split>/<xx>/<id>.json
 静态场景 = constellation + taskset
 ```
 
-当前生成流程已经加入任务点位可观测性筛选。`TaskSet.sample()` 仍然负责随机生成候选任务，但 `tools/generate_constellations_and_tasksets.py` 会在写入正式 `taskset` 前，用对应星座和 Basilisk 可见性判断筛掉物理上没有连续观测窗口的任务点位，并重新补齐任务数量。
+当前生成流程已经加入任务点位可观测性筛选。`TaskSet.sample()` 仍然负责随机生成候选任务，但 `tools/generate_constellations_and_tasksets.py` 会在写入正式 `taskset` 前，用对应星座做快速物理几何判断，筛掉没有连续观测窗口的任务点位，并重新补齐任务数量。这里不启动完整 Basilisk 仿真，不检查姿态控制、能耗或传感器开关动态。
 
 筛选标准是：候选任务在自己的 `release_time <= t <= due_time` 时间窗内，至少存在一段连续可观测时间，长度不小于该任务的 `duration`。这样可以避免大量“无论模型如何调度都无法完成”的随机点位进入正式训练和评估，从而让 `CR/PCR/WCR` 更接近模型调度能力本身。
 
@@ -816,17 +816,21 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 - 连续可观测片段长度必须不小于该任务的 `duration`。
 - 可观测性判断包含卫星与任务点的几何可达性、最大偏离星下点角约束和 `sensor_type` 匹配。
 - 筛选不要求卫星初始姿态已经对准目标，也不把初始传感器开关状态当作任务无解原因。
+- 当前实现使用快速两体轨道传播和地球自转近似做物理几何判断，不启动完整 Basilisk 仿真；Basilisk 仍用于后续真实评估和轨迹生成。
 
 这次修改解决的问题是：旧版随机任务点位里可能存在大量物理上不可观测的任务。这样的任务无论模型如何调度都无法完成，会直接压低 `CR/PCR/WCR`，但这不属于模型预测能力差，而是场景生成阶段给了无解任务。筛选后，正式训练和评估中的失败更接近“模型是否调度成功”，而不是“任务本身是否无解”。
 
 ### 重新跑实验时的数据处理
 
-如果要正式采用这版筛选逻辑，至少需要重新生成：
+如果要正式采用这版筛选逻辑，至少需要重新生成相关实验会读取的 `tasksets`。如果只拿旧 checkpoint 重新评估，则重建评估 split 即可：
 
-- `data/tasksets/train`
 - `data/tasksets/val_seen`
 - `data/tasksets/val_unseen`
 - `data/tasksets/test`
+
+如果要重新训练，再重建：
+
+- `data/tasksets/train`
 
 建议优先复用原来的：
 

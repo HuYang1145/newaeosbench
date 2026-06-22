@@ -60,6 +60,10 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 5. 用筛选版场景重新评估模型时，必须同时列出 `CR`、`PCR`、`WCR`、`PC_Wh` 和 `CS_no_TAT`，并明确说明这是“可观测性过滤后”的评估口径。
 6. 新实验结果必须记录到报告或独立 summary 中，避免再次把长期过程记录堆进 `TODO.md`。
 
+## 当前托管任务
+
+- `taskset_filter_full_eval_4x_20260622_1236_r0` 到 `taskset_filter_full_eval_4x_20260622_1236_r3`：已完成 4 路并行重建完整评估 split 的筛选版 `tasksets`，包括 `val_seen=500`、`val_unseen=500`、`test=1000`。旧任务集已归档到 `data/tasksets_unfiltered_20260622_122858`，新任务集输出到 `data/tasksets`，日志为 `work_dirs/taskset_filtering_logs/taskset_filter_full_eval_4x_20260622_1236_r*.log`。相关脚本集中放在 `scripts/taskset_filtering/`。
+
 ## 关键文档
 
 - `README.md`：项目入口、环境、数据、训练和评估说明。
