@@ -1,0 +1,43 @@
+__all__ = [
+    'TIMESTAMP',
+    'INTERVAL',
+    'MAX_TIME_STEP',
+    'DATA_ROOT',
+    'ANNOTATIONS_ROOT',
+    'CONSTELLATIONS_ROOT',
+    'ORBITS_ROOT',
+    'SATELLITES_ROOT',
+    'TASKSETS_ROOT',
+    'TRAJECTORIES_ROOT',
+    'STATISTICS_PATH',
+    'RADIUS_EARTH',
+    'ECCENTRICITY_EARTH',
+    'MU_EARTH',
+    'MAX_OFF_NADIR_ANGLE',
+]
+
+import math
+import pathlib
+
+TIMESTAMP = '20190101000000'
+
+INTERVAL = 1.  # seconds
+
+MAX_TIME_STEP = 3600  # seconds
+
+DATA_ROOT = pathlib.Path('data')
+ANNOTATIONS_ROOT = DATA_ROOT / 'annotations'
+CONSTELLATIONS_ROOT = DATA_ROOT / 'constellations'
+ORBITS_ROOT = DATA_ROOT / 'orbits'
+SATELLITES_ROOT = DATA_ROOT / 'satellites'
+TASKSETS_ROOT = DATA_ROOT / 'tasksets'
+TRAJECTORIES_ROOT = DATA_ROOT / 'trajectories'
+
+STATISTICS_PATH = DATA_ROOT / 'statistics_new.pth'
+
+RADIUS_EARTH = 6378136.6  # in m
+MU_EARTH = 398600436000000.0  # in m^3/s^2
+ECCENTRICITY_EARTH = 0.0  # TODO
+MAX_OFF_NADIR_ANGLE = math.pi / 3  # 60 degrees
+# MAX_OFF_NADIR_ANGLE = math.pi / 4  # 45 degrees
+# MAX_OFF_NADIR_ANGLE = math.pi / 6  # 30 degrees

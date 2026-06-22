@@ -1,0 +1,45 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local environments and machine-specific files
+.env
+.venv/
+venv/
+.conda/
+.DS_Store
+.vscode/
+.idea/
+.claude/settings.local.json
+.codex
+
+# Experiment data and generated outputs
+data/
+work_dirs/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.log
+*.out
+*.err
+events.out.tfevents*
+
+# Local papers and large binary documents
+*.pdf
+
+# Basilisk build/runtime artifacts
+third_party/basilisk/dist3/
+third_party/basilisk/bsk.egg-info/
+third_party/basilisk/supportData/
