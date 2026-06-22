@@ -781,3 +781,95 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 ```text
 CS_paper = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + TAT_h/7 + PC_Wh/100
 ```
+
+## 场景生成可观测性筛选
+
+### 修改内容
+
+`tools/generate_constellations_and_tasksets.py` 已经加入任务点位可观测性筛选。原始脚本已备份为：
+
+```text
+tools/generate_constellations_and_tasksets.py.bak_20260622
+```
+
+新的生成逻辑不再把 `TaskSet.sample()` 随机生成的任务直接写入正式 `data/tasksets/`。流程变为：
+
+```text
+采样 constellation
+        |
+        v
+过采样候选 taskset
+        |
+        v
+按当前 constellation 扫描每个任务是否存在连续可观测窗口
+        |
+        v
+只保留可观测任务，数量不足则继续补采样
+        |
+        v
+重新编号任务 id，并写入 data/tasksets/
+```
+
+筛选标准是：
+
+- 候选任务必须在自己的 `release_time <= t <= due_time` 时间窗内存在连续可观测片段。
+- 连续可观测片段长度必须不小于该任务的 `duration`。
+- 可观测性判断包含卫星与任务点的几何可达性、最大偏离星下点角约束和 `sensor_type` 匹配。
+- 筛选不要求卫星初始姿态已经对准目标，也不把初始传感器开关状态当作任务无解原因。
+
+这次修改解决的问题是：旧版随机任务点位里可能存在大量物理上不可观测的任务。这样的任务无论模型如何调度都无法完成，会直接压低 `CR/PCR/WCR`，但这不属于模型预测能力差，而是场景生成阶段给了无解任务。筛选后，正式训练和评估中的失败更接近“模型是否调度成功”，而不是“任务本身是否无解”。
+
+### 重新跑实验时的数据处理
+
+如果要正式采用这版筛选逻辑，至少需要重新生成：
+
+- `data/tasksets/train`
+- `data/tasksets/val_seen`
+- `data/tasksets/val_unseen`
+- `data/tasksets/test`
+
+建议优先复用原来的：
+
+- `data/satellites`
+- `data/constellations`
+- `data/orbits`
+
+原因是这次主要修正任务点位是否可观测。如果同时重新生成卫星池或星座，后续结果变化就混入了 constellation 分布变化，不利于判断筛选逻辑本身带来的影响。
+
+需要跟着重新生成或重新评估的数据包括：
+
+- 基于旧 `tasksets` 生成的 `data/annotations`
+- 基于旧 `tasksets` 生成的 `data/trajectories.*`
+- 基于旧 `tasksets` 跑出的 `work_dirs/` 评估日志、指标汇总和报告表格
+
+不一定需要重新生成的数据包括：
+
+- 已有模型 checkpoint。旧 checkpoint 可以直接拿来在筛选版 `tasksets` 上重新评估，用来判断“同一模型在过滤无解任务后 CR/PCR/WCR 是否变化”。
+- 卫星池、星座和轨道数据。除非实验目标改成重新采样整个场景分布，否则不建议一起重建。
+
+老数据不要直接删除。建议先归档改名，例如：
+
+```bash
+mv data/tasksets data/tasksets_unfiltered_20260622
+mv data/annotations data/annotations_unfiltered_20260622
+mv data/trajectories.1 data/trajectories.1_unfiltered_20260622
+```
+
+如果要保留多轮专家迭代数据，也应分别归档 `data/trajectories.2`、`data/trajectories.3`、`data/trajectories.4` 等目录。归档后再运行新的场景生成脚本，让 `data/tasksets/` 重新生成筛选版任务集。
+
+注意：当前生成脚本遇到已经存在的 `taskset` 文件会跳过，不会覆盖。因此如果要生成筛选版任务集，必须先把旧 `data/tasksets/` 移走或改名；不要在旧目录原地混合新旧任务集。
+
+推荐实验顺序：
+
+1. 归档旧 `data/tasksets`、旧 annotation、旧 trajectories 和旧评估日志。
+2. 保留原 `data/satellites`、`data/constellations`、`data/orbits`。
+3. 重新运行 `tools/generate_constellations_and_tasksets.py` 生成筛选版 `tasksets`。
+4. 先用已有 checkpoint 在筛选版 test/val split 上重新评估，得到新的 `CR/PCR/WCR/PC_Wh/CS_no_TAT`。
+5. 如果要重新训练，再基于筛选版 `tasksets` 重新生成 annotation 和 trajectories，然后启动新一轮训练。
+
+报告和表格里必须明确区分：
+
+- `unfiltered`：旧随机任务集口径，可能包含大量物理无解任务。
+- `observable-filtered`：新筛选任务集口径，任务点位至少存在连续可观测机会。
+
+这两个口径下的 `CR/PCR/WCR` 不能直接混写到同一张结论表里，除非表格明确标注了场景生成口径。
