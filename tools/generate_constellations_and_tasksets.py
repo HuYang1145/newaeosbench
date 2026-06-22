@@ -5,12 +5,18 @@
 """
 
 import random
+import math
+from collections.abc import Sequence
 
 import todd
+import torch
 from tqdm import tqdm, trange
 
 from constellation import CONSTELLATIONS_ROOT, SATELLITES_ROOT, TASKSETS_ROOT
-from constellation.data import Constellation, Satellite, Satellites, TaskSet
+from constellation.constants import MAX_OFF_NADIR_ANGLE, MAX_TIME_STEP
+from constellation.constants import RADIUS_EARTH
+from constellation.data import Constellation, Satellite, Satellites, Task
+from constellation.data import TaskSet
 
 
 def load_satellites(split: str) -> Satellites:
@@ -26,7 +32,158 @@ def load_satellites(split: str) -> Satellites:
     return satellites
 
 
-def generate_constellations_and_tasksets(split: str, n: int) -> None:
+def has_contiguous_observation_window(
+    task: Task,
+    visible_by_time: Sequence[bool] | torch.Tensor,
+) -> bool:
+    """判断任务在自身时间窗内是否存在连续可观测片段。"""
+    streak = 0
+    start = max(task.release_time, 0)
+    stop = min(task.due_time + 1, len(visible_by_time))
+
+    for time_step in range(start, stop):
+        visible = visible_by_time[time_step]
+        if isinstance(visible, torch.Tensor):
+            visible = bool(visible.item())
+
+        if visible:
+            streak += 1
+            if streak >= task.duration:
+                return True
+        else:
+            streak = 0
+
+    return False
+
+
+def renumber_taskset(taskset: TaskSet) -> TaskSet:
+    """筛选后重新编号，避免 task id 与列表位置不一致。"""
+    return TaskSet(
+        Task(
+            id_,
+            task.release_time,
+            task.due_time,
+            task.duration,
+            task.coordinate,
+            task.sensor_type,
+        ) for id_, task in enumerate(taskset)
+    )
+
+
+def scan_observable_task_flags(
+    constellation: Constellation,
+    taskset: TaskSet,
+    *,
+    max_time_step: int = MAX_TIME_STEP,
+) -> list[bool]:
+    """用 Basilisk 扫描每个任务是否存在可完成的连续观测窗口。"""
+    from constellation.environments import BasiliskEnvironment
+
+    environment = BasiliskEnvironment(
+        constellation=constellation,
+        all_tasks=taskset,
+    )
+    visibility_trace = torch.zeros(
+        max_time_step,
+        len(taskset),
+        dtype=torch.bool,
+    )
+
+    for time_step in range(max_time_step):
+        # 这里只筛选点位是否存在几何观测机会，不要求卫星当前姿态
+        # 已经指向目标，也不把初始传感器开关状态作为无解条件。
+        visibility_trace[time_step] = (
+            _geometric_accessibility(environment, taskset).any(0)
+        )
+        environment.timer.step()
+        environment.step()
+
+    return [
+        has_contiguous_observation_window(task, visibility_trace[:, i])
+        for i, task in enumerate(taskset)
+    ]
+
+
+def _geometric_accessibility(
+    environment: object,
+    taskset: TaskSet,
+) -> torch.Tensor:
+    """按 OptimalAlgorithm 的几何约束检查卫星-任务是否可达。"""
+    earth_rotation = environment.get_earth_rotation()  # type: ignore[attr-defined]
+    constellation = environment.get_constellation()  # type: ignore[attr-defined]
+
+    taskset_eci = (
+        earth_rotation.new_tensor(taskset.coordinates_ecef)
+        @ earth_rotation
+    )
+    constellation_eci = constellation.coordinates_eci
+    distance = torch.norm(
+        taskset_eci.unsqueeze(0) - constellation_eci.unsqueeze(1),
+        dim=2,
+    )
+    orbital_radius = constellation_eci.norm(dim=1).unsqueeze(1)
+
+    mask_distance = distance < RADIUS_EARTH
+    cosine = (
+        (distance**2 + orbital_radius**2 - RADIUS_EARTH**2)
+        / (2 * distance * orbital_radius)
+    )
+    mask_off_nadir = cosine > math.cos(MAX_OFF_NADIR_ANGLE)
+
+    satellite_sensor_type = torch.tensor([
+        satellite.sensor.type_ for satellite in constellation.sort()
+    ])
+    task_sensor_type = torch.tensor([task.sensor_type for task in taskset])
+    mask_sensor = satellite_sensor_type.unsqueeze(1) == task_sensor_type
+
+    return mask_distance & mask_off_nadir & mask_sensor
+
+
+def sample_observable_taskset(
+    constellation: Constellation,
+    n: int,
+    *,
+    oversample_factor: int = 5,
+    max_rounds: int = 10,
+    max_time_step: int = MAX_TIME_STEP,
+) -> TaskSet:
+    """反复过采样任务，保留物理上存在观测机会的点位。"""
+    kept: list[Task] = []
+
+    for _ in range(max_rounds):
+        remaining = n - len(kept)
+        if remaining <= 0:
+            break
+
+        candidate_count = max(remaining * oversample_factor, remaining)
+        candidates = TaskSet.sample(candidate_count)
+        observable_flags = scan_observable_task_flags(
+            constellation,
+            candidates,
+            max_time_step=max_time_step,
+        )
+        kept.extend(
+            task for task, observable
+            in zip(candidates, observable_flags)
+            if observable
+        )
+
+    if len(kept) < n:
+        raise RuntimeError(
+            f'Only sampled {len(kept)} observable tasks, expected {n}. '
+            'Increase oversample_factor/max_rounds or inspect the sampled '
+            'constellation.'
+        )
+
+    return renumber_taskset(TaskSet(kept[:n]))
+
+
+def generate_constellations_and_tasksets(
+    split: str,
+    n: int,
+    *,
+    filter_observable: bool = True,
+) -> None:
     satellites = load_satellites(split)
 
     constellations_root = CONSTELLATIONS_ROOT / split
@@ -42,11 +199,17 @@ def generate_constellations_and_tasksets(split: str, n: int) -> None:
                 random.randint(1, 50),
             )
             constellation.dump(str(constellation_path))
+        else:
+            constellation = Constellation.load(str(constellation_path))
 
         taskset_path = tasks_root / f'{i // 1000:02}/{i:05}.json'
         if not taskset_path.exists():
             taskset_path.parent.mkdir(parents=True, exist_ok=True)
-            taskset = TaskSet.sample(random.randint(50, 300))
+            num_tasks = random.randint(50, 300)
+            if filter_observable:
+                taskset = sample_observable_taskset(constellation, num_tasks)
+            else:
+                taskset = TaskSet.sample(num_tasks)
             taskset.dump(str(taskset_path))
 
 

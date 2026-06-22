@@ -382,6 +382,10 @@ data/tasksets/<split>/<xx>/<id>.json
 静态场景 = constellation + taskset
 ```
 
+当前生成流程已经加入任务点位可观测性筛选。`TaskSet.sample()` 仍然负责随机生成候选任务，但 `tools/generate_constellations_and_tasksets.py` 会在写入正式 `taskset` 前，用对应星座和 Basilisk 可见性判断筛掉物理上没有连续观测窗口的任务点位，并重新补齐任务数量。
+
+筛选标准是：候选任务在自己的 `release_time <= t <= due_time` 时间窗内，至少存在一段连续可观测时间，长度不小于该任务的 `duration`。这样可以避免大量“无论模型如何调度都无法完成”的随机点位进入正式训练和评估，从而让 `CR/PCR/WCR` 更接近模型调度能力本身。
+
 ### 4. 为什么不把 constellation 和 taskset 合并成一个文件
 
 可以合并，但这个项目选择分开是合理的，因为二者语义不同：
