@@ -22,6 +22,13 @@ env PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}" PYTHONPATH=":${PYTHONPATH:-
 - When local results differ from the paper, prioritize finding the cause before launching unrelated new experiments. Check evaluation protocol, data split, annotation pool, checkpoint lineage, model config, loss definition, rollout/filtering rules, and aggregation formula.
 - Treat paper alignment as the default success criterion: for each experiment, record which paper row it corresponds to, which metrics match, which metrics diverge, and the likely reason.
 - The old 200k CE-only model should be preserved as a historical baseline, but it is not the strict paper reproduction model.
+- For the current observable-filtered taskset work, distinguish three layers clearly:
+  - `constellation` / `satellites` / `orbits` are the physical satellite scene and should normally be reused when only fixing task point validity.
+  - `tasksets` are the generated ground observation tasks. Observable filtering modifies this layer.
+  - `trajectories.*` are rollout/expert/control trajectories generated on a particular taskset. They are not required for evaluating an existing checkpoint, but must be regenerated if retraining on new tasksets.
+- Observable taskset filtering should be a fast physical geometry check, not a full Basilisk rollout. The current implementation uses orbit propagation plus Earth rotation, Earth occlusion/off-nadir constraints, sensor type matching, and a continuous visibility window within each task's release/due window.
+- Formal model evaluation is unchanged by taskset filtering: it still runs `Policy + Controller + BasiliskEnvironment + TaskManager + Evaluators`. `TaskManager` is only the runtime task-state ledger for release/ongoing/progress/succeeded/failed/closed; it is not the task generator.
+- Keep observable-filtered evaluation outputs separate from unfiltered outputs. Use names containing `observable_filtered`, such as `work_dirs/rl_eval_*_observable_filtered` and `work_dirs/eval_summaries/*_observable_filtered.json`, so old and new metrics are not mixed.
 - The paper states that train/val/test are split as: train has 16,218 trajectories, val-seen has 64 scenarios, val-unseen has 64 scenarios, and test has 64 scenarios. Local evaluation split sizes should be checked against these numbers before comparing metrics.
 - The paper reports evaluation with 96 parallel simulator environments. For formal reproduction validation/evaluation runs, prefer `environment.world_size=96` when resources allow it. Keep the exact parallelism setting visible in the command or log so evaluation results can be traced.
 - Long formal evaluation runs should be launched in a managed session such as `tmux`, with logs under `work_dirs/eval_logs/`, so they continue after the interactive agent session closes. The current helper for the paper Stage-3 full-model evaluation is `scripts/run_stage3_96core_eval_managed.sh`.
@@ -34,6 +41,7 @@ env PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}" PYTHONPATH=":${PYTHONPATH:-
 
 - The worktree may contain user edits and experimental outputs. Do not revert or delete unrelated changes.
 - Treat `data/`, `work_dirs/`, and generated trajectory/annotation files as experiment state. Back up active annotations before replacing them.
+- Do not delete old generated datasets when changing tasksets. Prefer renaming directories with an explicit suffix such as `*_unfiltered_YYYYMMDD_HHMMSS`, then generate the new dataset into the expected active path.
 
 ## Communication
 

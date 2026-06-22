@@ -840,10 +840,20 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 
 原因是这次主要修正任务点位是否可观测。如果同时重新生成卫星池或星座，后续结果变化就混入了 constellation 分布变化，不利于判断筛选逻辑本身带来的影响。
 
-需要跟着重新生成或重新评估的数据包括：
+如果只是拿已有 checkpoint 在筛选版 `tasksets` 上重新评估，不需要重新生成：
 
-- 基于旧 `tasksets` 生成的 `data/annotations`
-- 基于旧 `tasksets` 生成的 `data/trajectories.*`
+- `data/annotations`
+- `data/trajectories.*`
+
+原因是正式评估会根据 `data/annotations/{split}.json` 选择场景 id，再读取当前 `data/constellations` 和 `data/tasksets` 运行模型；旧 checkpoint 评估不依赖旧专家轨迹。
+
+如果要重新训练模型，则需要重新生成：
+
+- 基于筛选版 `tasksets` 的 `data/trajectories.*`
+- 指向新轨迹池的训练 `data/annotations/*.json`
+
+必须重新评估或重新整理的数据包括：
+
 - 基于旧 `tasksets` 跑出的 `work_dirs/` 评估日志、指标汇总和报告表格
 
 不一定需要重新生成的数据包括：
@@ -851,10 +861,17 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 - 已有模型 checkpoint。旧 checkpoint 可以直接拿来在筛选版 `tasksets` 上重新评估，用来判断“同一模型在过滤无解任务后 CR/PCR/WCR 是否变化”。
 - 卫星池、星座和轨道数据。除非实验目标改成重新采样整个场景分布，否则不建议一起重建。
 
-老数据不要直接删除。建议先归档改名，例如：
+老数据不要直接删除。只做旧 checkpoint 重新评估时，建议至少归档旧 `tasksets` 和旧评估输出，例如：
 
 ```bash
 mv data/tasksets data/tasksets_unfiltered_20260622
+mv work_dirs/rl_eval_paper_joint_stage3_200k_96core_val_seen_managed \
+  work_dirs/rl_eval_paper_joint_stage3_200k_96core_val_seen_unfiltered_20260622
+```
+
+如果要重新训练，才需要另外归档并重建训练 annotation 和轨迹池，例如：
+
+```bash
 mv data/annotations data/annotations_unfiltered_20260622
 mv data/trajectories.1 data/trajectories.1_unfiltered_20260622
 ```
@@ -865,11 +882,13 @@ mv data/trajectories.1 data/trajectories.1_unfiltered_20260622
 
 推荐实验顺序：
 
-1. 归档旧 `data/tasksets`、旧 annotation、旧 trajectories 和旧评估日志。
+1. 归档旧 `data/tasksets` 和旧评估日志；如果要重新训练，再归档旧 annotation 和旧 trajectories。
 2. 保留原 `data/satellites`、`data/constellations`、`data/orbits`。
 3. 重新运行 `tools/generate_constellations_and_tasksets.py` 生成筛选版 `tasksets`。
 4. 先用已有 checkpoint 在筛选版 test/val split 上重新评估，得到新的 `CR/PCR/WCR/PC_Wh/CS_no_TAT`。
 5. 如果要重新训练，再基于筛选版 `tasksets` 重新生成 annotation 和 trajectories，然后启动新一轮训练。
+
+如果当前目标只是“旧 checkpoint 重新评估”，第 1 步只需要归档旧 `data/tasksets` 和旧评估输出；annotation 与 trajectories 可以保留不动。
 
 报告和表格里必须明确区分：
 

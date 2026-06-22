@@ -63,6 +63,7 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 ## 当前托管任务
 
 - `taskset_filter_full_eval_4x_20260622_1236_r0` 到 `taskset_filter_full_eval_4x_20260622_1236_r3`：已完成 4 路并行重建完整评估 split 的筛选版 `tasksets`，包括 `val_seen=500`、`val_unseen=500`、`test=1000`。旧任务集已归档到 `data/tasksets_unfiltered_20260622_122858`，新任务集输出到 `data/tasksets`，日志为 `work_dirs/taskset_filtering_logs/taskset_filter_full_eval_4x_20260622_1236_r*.log`。相关脚本集中放在 `scripts/taskset_filtering/`。
+- `stage3_observable_filtered_eval_20260622`：已完成最新 `paper_joint_stage3_200k` checkpoint 的筛选版 `tasksets` 评估，脚本为 `scripts/eval_observable_filtered/run_stage3_200k_96core_eval.sh`，输出目录为 `work_dirs/rl_eval_paper_joint_stage3_200k_96core_*_observable_filtered/`，汇总文件为 `work_dirs/eval_summaries/paper_joint_stage3_200k_no_tat_96core_observable_filtered.json`，结果摘要见 `docs/observable_filtered_stage3_eval_summary.md`。
 
 ## 关键文档
 
