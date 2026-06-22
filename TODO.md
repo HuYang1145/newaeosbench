@@ -1,4 +1,4 @@
-# TODO
+# 待办事项
 
 ## 当前目标
 
@@ -56,14 +56,14 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 1. 检查当前场景生成流程，重点看 `tools/generate_constellations_and_tasksets.py` 以及相关 taskset/constellation 生成逻辑。
 2. 设计任务点位可观测性筛选：对随机生成的候选任务，判断在对应星座和时间窗内是否存在至少一次有效观测机会。
 3. 统计现有评估结果中不可观测任务占比，优先区分 `never_visible`、`energy_or_sensor_blocked`、`assigned_but_not_completed` 等失败原因。
-4. 生成新的筛选版场景或任务集，并记录筛选前后任务数量、可观测任务比例和 split 分布。
+4. 生成新的筛选版场景或任务集，并记录筛选前后任务数量、可观测任务比例和数据划分分布。
 5. 用筛选版场景重新评估模型时，必须同时列出 `CR`、`PCR`、`WCR`、`PC_Wh` 和 `CS_no_TAT`，并明确说明这是“可观测性过滤后”的评估口径。
-6. 新实验结果必须记录到报告或独立 summary 中，避免再次把长期过程记录堆进 `TODO.md`。
+6. 新实验结果必须记录到报告或独立摘要中，避免再次把长期过程记录堆进 `TODO.md`。
 
 ## 当前托管任务
 
-- `taskset_filter_full_eval_4x_20260622_1236_r0` 到 `taskset_filter_full_eval_4x_20260622_1236_r3`：已完成 4 路并行重建完整评估 split 的筛选版 `tasksets`，包括 `val_seen=500`、`val_unseen=500`、`test=1000`。旧任务集已归档到 `data/tasksets_unfiltered_20260622_122858`，新任务集输出到 `data/tasksets`，日志为 `work_dirs/taskset_filtering_logs/taskset_filter_full_eval_4x_20260622_1236_r*.log`。相关脚本集中放在 `scripts/taskset_filtering/`。
-- `stage3_observable_filtered_eval_20260622`：已完成最新 `paper_joint_stage3_200k` checkpoint 的筛选版 `tasksets` 评估，脚本为 `scripts/eval_observable_filtered/run_stage3_200k_96core_eval.sh`，输出目录为 `work_dirs/rl_eval_paper_joint_stage3_200k_96core_*_observable_filtered/`，汇总文件为 `work_dirs/eval_summaries/paper_joint_stage3_200k_no_tat_96core_observable_filtered.json`，结果摘要见 `docs/observable_filtered_stage3_eval_summary.md`。
+- `taskset_filter_full_eval_4x_20260622_1236_r0` 到 `taskset_filter_full_eval_4x_20260622_1236_r3`：已完成 4 路并行重建完整评估划分的筛选版 `tasksets`，包括 `val_seen=500`、`val_unseen=500`、`test=1000`。旧任务集已归档到 `data/tasksets_unfiltered_20260622_122858`，新任务集输出到 `data/tasksets`，日志为 `work_dirs/taskset_filtering_logs/taskset_filter_full_eval_4x_20260622_1236_r*.log`。相关脚本集中放在 `scripts/taskset_filtering/`。
+- `stage3_observable_filtered_eval_20260622`：已完成最新 `paper_joint_stage3_200k` 检查点的筛选版 `tasksets` 评估，脚本为 `scripts/eval_observable_filtered/run_stage3_200k_96core_eval.sh`，输出目录为 `work_dirs/rl_eval_paper_joint_stage3_200k_96core_*_observable_filtered/`，汇总文件为 `work_dirs/eval_summaries/paper_joint_stage3_200k_no_tat_96core_observable_filtered.json`，结果摘要见 `docs/observable_filtered_stage3_eval_summary.md`。
 
 ## 关键文档
 

@@ -64,7 +64,7 @@ tail -f work_dirs/eval_logs/xxx.log
 
 ### 2. GPU 训练、GPU 评估和长时间仿真
 
-只要任务会占用 GPU，或者会长时间运行，例如模型训练、正式评估、模型 rollout、大规模 Basilisk 仿真，就应该通过 Slurm 提交。
+只要任务会占用 GPU，或者会长时间运行，例如模型训练、正式评估、模型滚动生成、大规模 Basilisk 仿真，就应该通过 Slurm 提交。
 
 短时间调试用 `srun`，例如只确认环境、路径和 GPU 是否能启动：
 
@@ -209,9 +209,9 @@ AEOS-Former 不是把时间当作序列轴的普通时间序列 Transformer。�
 
 | 模块 | 序列或配对对象 | 作用 |
 |---|---|---|
-| Encoder | 任务序列，长度为当前候选任务数 `nt` | 编码任务发布时间、截止时间、持续时间、传感器类型、任务进度等信息，并用任务 mask 屏蔽未发布、已过期或已完成任务。 |
+| Encoder | 任务序列，长度为当前候选任务数 `nt` | 编码任务发布时间、截止时间、持续时间、传感器类型、任务进度等信息，并用任务掩码屏蔽未发布、已过期或已完成任务。 |
 | TimeModel / ICM | 每个卫星-任务二元组，形状近似为 `[batch, ns, nt]` | 预测卫星执行某任务的可行性和预计持续时间，作为软约束引导 Decoder 的交叉注意力。最终物理合法性仍由 Basilisk 硬约束验证。 |
-| Decoder | 卫星序列，长度为当前卫星数 `ns` | 先让卫星之间通过自注意力交换状态，再以卫星为 Query、任务为 Key/Value 做交叉注意力，输出每颗卫星选择空动作或某个任务的 logits。 |
+| Decoder | 卫星序列，长度为当前卫星数 `ns` | 先让卫星之间通过自注意力交换状态，再以卫星为查询向量、任务为键/值向量做交叉注意力，输出每颗卫星选择空动作或某个任务的未归一化得分。 |
 
 训练数据由 `Dataset` 或 `JointDataset` 从多个文件组合得到：
 
@@ -223,10 +223,10 @@ data/tasksets/<split>/<id>.json
 data/statistics_new.pth
         |
         v
-Batch / JointBatch
+`Batch` 或 `JointBatch`
         |
         v
-Model / JointModel
+`Model` 或 `JointModel`
 ```
 
 其中：
@@ -401,13 +401,13 @@ trajectory    = 这个场景里实际怎么调度
 - 同一个星座可以搭配不同任务集。
 - 同一个任务集也可以用于不同星座实验。
 - 同一个 `constellation + taskset` 可以生成多轮不同轨迹，例如 `trajectories.1`、`trajectories.2`、`trajectories.3`。
-- Stage-2/Stage-3 只需要替换轨迹和 annotation，不需要复制一整份静态场景。
+- Stage-2/Stage-3 只需要替换轨迹和标注文件，不需要复制一整份静态场景。
 - `Dataset` 可以清楚地区分静态特征和动态轨迹特征。
 
 因此训练样本不是一个单独文件，而是由多个文件组合得到：
 
 ```text
-constellation + taskset + trajectory + annotation
+星座文件 + 任务集文件 + 轨迹文件 + 标注文件
 ```
 
 ### 5. 生成专家轨迹
@@ -454,9 +454,9 @@ TAT
 PC
 ```
 
-### 6. Stage-2/Stage-3：模型 rollout 生成候选轨迹
+### 6. Stage-2/Stage-3：模型滚动生成候选轨迹
 
-论文式专家迭代不是只训练一次，而是会让当前模型在场景上 rollout，生成新的候选轨迹。
+论文式专家迭代不是只训练一次，而是会让当前模型在场景上滚动生成，得到新的候选轨迹。
 
 入口工具：
 
@@ -484,7 +484,7 @@ trajectories.2 = Stage-2 候选/筛选轨迹
 trajectories.3 = Stage-3 候选/筛选轨迹
 ```
 
-### 7. 用 tau_e 筛选轨迹并生成 annotation
+### 7. 用 tau_e 筛选轨迹并生成标注文件
 
 入口工具：
 
@@ -502,7 +502,7 @@ python tools/build_tau_e_annotation.py \
 作用：
 
 ```text
-读取基础 annotation
+读取基础标注文件
         |
         v
 读取 data/trajectories.N 中的候选轨迹指标
@@ -511,10 +511,10 @@ python tools/build_tau_e_annotation.py \
 根据 CS <= tau_e 判断是否接受候选轨迹
         |
         v
-输出新的 annotation
+输出新的标注文件
 ```
 
-annotation 通常是：
+标注文件通常是：
 
 ```json
 {
@@ -532,7 +532,7 @@ id=4 读取 data/trajectories.1/<split>/00/00004.pth
 id=5 读取 data/trajectories.2/<split>/00/00005.pth
 ```
 
-也就是说，annotation 决定“训练时用哪些场景，以及每个场景采用哪一轮轨迹”。
+也就是说，标注文件决定“训练时用哪些场景，以及每个场景采用哪一轮轨迹”。
 
 ### 8. 进入 Dataset：把文件变成训练张量
 
@@ -566,7 +566,7 @@ Batch 或 JointBatch
 - 读取卫星动态轨迹特征。
 - 读取任务静态特征。
 - 读取任务进度。
-- 生成任务有效性 mask。
+- 生成任务有效性掩码。
 - 读取专家动作 `actions.task_id` 作为监督标签。
 - 对特征做归一化。
 
@@ -582,8 +582,8 @@ constraint_durations
 这些用于训练：
 
 ```text
-L_s: feasibility loss
-L_t: time loss
+L_s：可行性损失
+L_t：时间回归损失
 ```
 
 ### 9. 进入 Model：计算预测和损失
@@ -603,7 +603,7 @@ Dataset
 Model
         |
         v
-L_a = action classification loss
+L_a = 动作分类损失
 ```
 
 论文式联合模型：
@@ -621,9 +621,9 @@ L_a + L_s + L_t
 其中：
 
 ```text
-L_a = assignment loss，任务分配动作损失
-L_s = feasibility loss，可行性预测损失
-L_t = time loss，时间/持续时间预测损失
+L_a = 任务分配动作损失
+L_s = 可行性预测损失
+L_t = 时间/持续时间预测损失
 ```
 
 ## 训练模型
@@ -682,10 +682,10 @@ work_dirs/paper_joint_stage*_200k/checkpoints/
 
 ## Stage-2 专家迭代
 
-Stage-2 不是在同一个固定 annotation 上普通多训练几轮，而是仿真驱动的专家迭代：
+Stage-2 不是在同一个固定标注文件上普通多训练几轮，而是仿真驱动的专家迭代：
 
 ```text
-当前模型 rollout
+当前模型滚动生成
         |
         v
 生成候选轨迹
@@ -697,7 +697,7 @@ Basilisk 仿真评估轨迹
 保留 CS <= tau_e 的高质量轨迹
         |
         v
-合并进训练 annotation
+合并进训练标注文件
         |
         v
 继续训练模型
@@ -709,7 +709,7 @@ Basilisk 仿真评估轨迹
 - `tools/build_tau_e_annotation.py`
 - `tools/wrap_time_model_checkpoint.py`
 
-`CS` 是整条轨迹级别的评估分数，不是每个训练 step 的直接 loss。它主要用于 Stage-2/Stage-3 的轨迹筛选。
+`CS` 是整条轨迹级别的评估分数，不是每个训练步的直接损失。它主要用于 Stage-2/Stage-3 的轨迹筛选。
 
 ## 评估模型
 
@@ -743,7 +743,7 @@ ControllerEnvironment
 Controller + BasiliskEnvironment + TaskManager
         |
         v
-Policy 加载 AEOS-Former checkpoint
+Policy 加载 AEOS-Former 检查点
         |
         v
 Evaluators 输出 CR/PCR/WCR/TAT/PC
@@ -758,9 +758,9 @@ tools/summarize_no_tat_eval.py 汇总 CS_no_TAT
 
 | 指标 | 当前口径 |
 |---|---|
-| CR | split 内场景级 CR 平均，再乘 100 写入表格 |
-| PCR | split 内场景级 PCR 平均，再乘 100 写入表格 |
-| WCR | split 内场景级 WCR 平均，再乘 100 写入表格 |
+| CR | 数据划分内场景级 CR 平均，再乘 100 写入表格 |
+| PCR | 数据划分内场景级 PCR 平均，再乘 100 写入表格 |
+| WCR | 数据划分内场景级 WCR 平均，再乘 100 写入表格 |
 | PC | 优先使用 `PC_Wh`；如果只有 `PC`，则使用 `PC_Wh = PC / 3600` |
 | CS | 暂时使用不含 TAT 的 `CS_no_TAT` |
 
@@ -822,7 +822,7 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 
 ### 重新跑实验时的数据处理
 
-如果要正式采用这版筛选逻辑，至少需要重新生成相关实验会读取的 `tasksets`。如果只拿旧 checkpoint 重新评估，则重建评估 split 即可：
+如果要正式采用这版筛选逻辑，至少需要重新生成相关实验会读取的 `tasksets`。如果只拿旧检查点重新评估，则重建评估划分即可：
 
 - `data/tasksets/val_seen`
 - `data/tasksets/val_unseen`
@@ -838,14 +838,14 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 - `data/constellations`
 - `data/orbits`
 
-原因是这次主要修正任务点位是否可观测。如果同时重新生成卫星池或星座，后续结果变化就混入了 constellation 分布变化，不利于判断筛选逻辑本身带来的影响。
+原因是这次主要修正任务点位是否可观测。如果同时重新生成卫星池或星座，后续结果变化就混入了星座分布变化，不利于判断筛选逻辑本身带来的影响。
 
-如果只是拿已有 checkpoint 在筛选版 `tasksets` 上重新评估，不需要重新生成：
+如果只是拿已有检查点在筛选版 `tasksets` 上重新评估，不需要重新生成：
 
 - `data/annotations`
 - `data/trajectories.*`
 
-原因是正式评估会根据 `data/annotations/{split}.json` 选择场景 id，再读取当前 `data/constellations` 和 `data/tasksets` 运行模型；旧 checkpoint 评估不依赖旧专家轨迹。
+原因是正式评估会根据 `data/annotations/{split}.json` 选择场景 id，再读取当前 `data/constellations` 和 `data/tasksets` 运行模型；旧检查点评估不依赖旧专家轨迹。
 
 如果要重新训练模型，则需要重新生成：
 
@@ -858,10 +858,10 @@ tools/generate_constellations_and_tasksets.py.bak_20260622
 
 不一定需要重新生成的数据包括：
 
-- 已有模型 checkpoint。旧 checkpoint 可以直接拿来在筛选版 `tasksets` 上重新评估，用来判断“同一模型在过滤无解任务后 CR/PCR/WCR 是否变化”。
+- 已有模型检查点。旧检查点可以直接拿来在筛选版 `tasksets` 上重新评估，用来判断“同一模型在过滤无解任务后 CR/PCR/WCR 是否变化”。
 - 卫星池、星座和轨道数据。除非实验目标改成重新采样整个场景分布，否则不建议一起重建。
 
-老数据不要直接删除。只做旧 checkpoint 重新评估时，建议至少归档旧 `tasksets` 和旧评估输出，例如：
+老数据不要直接删除。只做旧检查点重新评估时，建议至少归档旧 `tasksets` 和旧评估输出，例如：
 
 ```bash
 mv data/tasksets data/tasksets_unfiltered_20260622
@@ -869,7 +869,7 @@ mv work_dirs/rl_eval_paper_joint_stage3_200k_96core_val_seen_managed \
   work_dirs/rl_eval_paper_joint_stage3_200k_96core_val_seen_unfiltered_20260622
 ```
 
-如果要重新训练，才需要另外归档并重建训练 annotation 和轨迹池，例如：
+如果要重新训练，才需要另外归档并重建训练标注文件和轨迹池，例如：
 
 ```bash
 mv data/annotations data/annotations_unfiltered_20260622
@@ -882,17 +882,17 @@ mv data/trajectories.1 data/trajectories.1_unfiltered_20260622
 
 推荐实验顺序：
 
-1. 归档旧 `data/tasksets` 和旧评估日志；如果要重新训练，再归档旧 annotation 和旧 trajectories。
+1. 归档旧 `data/tasksets` 和旧评估日志；如果要重新训练，再归档旧标注文件和旧轨迹。
 2. 保留原 `data/satellites`、`data/constellations`、`data/orbits`。
 3. 重新运行 `tools/generate_constellations_and_tasksets.py` 生成筛选版 `tasksets`。
-4. 先用已有 checkpoint 在筛选版 test/val split 上重新评估，得到新的 `CR/PCR/WCR/PC_Wh/CS_no_TAT`。
-5. 如果要重新训练，再基于筛选版 `tasksets` 重新生成 annotation 和 trajectories，然后启动新一轮训练。
+4. 先用已有检查点在筛选版 test/val 划分上重新评估，得到新的 `CR/PCR/WCR/PC_Wh/CS_no_TAT`。
+5. 如果要重新训练，再基于筛选版 `tasksets` 重新生成标注文件和轨迹，然后启动新一轮训练。
 
-如果当前目标只是“旧 checkpoint 重新评估”，第 1 步只需要归档旧 `data/tasksets` 和旧评估输出；annotation 与 trajectories 可以保留不动。
+如果当前目标只是“旧检查点重新评估”，第 1 步只需要归档旧 `data/tasksets` 和旧评估输出；标注文件和轨迹可以保留不动。
 
 报告和表格里必须明确区分：
 
-- `unfiltered`：旧随机任务集口径，可能包含大量物理无解任务。
-- `observable-filtered`：新筛选任务集口径，任务点位至少存在连续可观测机会。
+- `unfiltered`（未过滤）：旧随机任务集口径，可能包含大量物理无解任务。
+- `observable-filtered`（可观测性过滤）：新筛选任务集口径，任务点位至少存在连续可观测机会。
 
 这两个口径下的 `CR/PCR/WCR` 不能直接混写到同一张结论表里，除非表格明确标注了场景生成口径。
