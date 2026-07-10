@@ -301,7 +301,7 @@ class Dataset(torch.utils.data.Dataset[Batch]):
     ) -> torch.Tensor:
         return actions['task_id'][indices]
 
-    def __getitem__(self, index: int) -> Batch:
+    def _load_trajectory(self, index: int) -> tuple[int, int, TrajectoryData]:
         id_ = self._annotations['ids'][index]
         best_epoch_ = self._annotations['epochs'][index]
 
@@ -312,11 +312,21 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             / f'{id_ // 1000:02}'
             / f'{id_:05}.pth',
         )
+        return id_, best_epoch_, trajectory
 
+    def _build_batch(
+        self,
+        index: int,
+        id_: int,
+        best_epoch_: int,
+        trajectory: TrajectoryData,
+        return_full_data: bool = False,
+    ):
         tasks_sensor_type, tasks_data, tasks_mask = self._load_tasks(
             trajectory['taskset'],
             id_,
         )
+        full_tasks_data = tasks_data
 
         # a time step is valid iff any task is valid
         indices = tasks_mask.any(-1).nonzero().flatten().tolist()
@@ -349,26 +359,65 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             tasks_mask,
         ], -1)
         if not augmented_tasks_mask.gather(-1, actions_task_id + 1).all():
-            raise RuntimeError(f"Trajectory.{best_epoch_} {index} ({id_}) is invalid")
+            raise RuntimeError(
+                f"Trajectory.{best_epoch_} {index} ({id_}) is invalid",
+            )
 
-        (
-            constellation_sensor_type,
-            constellation_sensor_enabled,
-            constellation_data,
-            constellation_mask,
-        ) = self._load_constellation(
-            trajectory['constellation'],
-            id_,
-            indices,
-        )
+        if return_full_data:
+            time_indices = list(range(
+                trajectory['constellation']['data'].shape[0],
+            ))
+            (
+                full_constellation_sensor_type,
+                full_constellation_sensor_enabled,
+                full_constellation_data,
+                full_constellation_mask,
+            ) = self._load_constellation(
+                trajectory['constellation'],
+                id_,
+                time_indices,
+            )
+            constellation_sensor_type = full_constellation_sensor_type[indices]
+            constellation_sensor_enabled = full_constellation_sensor_enabled[
+                indices
+            ]
+            constellation_data = full_constellation_data[indices]
+            constellation_mask = full_constellation_mask[indices]
+        else:
+            (
+                constellation_sensor_type,
+                constellation_sensor_enabled,
+                constellation_data,
+                constellation_mask,
+            ) = self._load_constellation(
+                trajectory['constellation'],
+                id_,
+                indices,
+            )
 
         if self.normalize:
-            constellation_data = (
-                (constellation_data - self._statistics.constellation_mean) /
-                (self._statistics.constellation_std + 1e-6)
-            )
-            tasks_data = ((tasks_data - self._statistics.taskset_mean) /
-                          (self._statistics.taskset_std + 1e-6))
+            if return_full_data:
+                full_constellation_data = (
+                    (
+                        full_constellation_data
+                        - self._statistics.constellation_mean
+                    ) / (self._statistics.constellation_std + 1e-6)
+                )
+                full_tasks_data = (
+                    (full_tasks_data - self._statistics.taskset_mean) /
+                    (self._statistics.taskset_std + 1e-6)
+                )
+                constellation_data = full_constellation_data[indices]
+                tasks_data = full_tasks_data[indices]
+                if not task_is_valid.all():
+                    tasks_data = tasks_data[:, task_is_valid]
+            else:
+                constellation_data = (
+                    (constellation_data - self._statistics.constellation_mean) /
+                    (self._statistics.constellation_std + 1e-6)
+                )
+                tasks_data = ((tasks_data - self._statistics.taskset_mean) /
+                              (self._statistics.taskset_std + 1e-6))
 
         # NOTE: sensor type should be 0-indexed
         batch = Batch(
@@ -385,7 +434,13 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             actions_task_id,
         )
 
+        if return_full_data:
+            return batch, full_constellation_data, full_tasks_data
         return batch
+
+    def __getitem__(self, index: int) -> Batch:
+        id_, best_epoch_, trajectory = self._load_trajectory(index)
+        return self._build_batch(index, id_, best_epoch_, trajectory)
 
 
 @ConstellationDatasetRegistry.register_()
@@ -473,35 +528,14 @@ class JointDataset(Dataset):
         return positives, negatives
 
     def __getitem__(self, index: int) -> JointBatch:
-        batch = super().__getitem__(index)
-        id_ = self._annotations['ids'][index]
-        best_epoch_ = self._annotations['epochs'][index]
-
-        trajectory: TrajectoryData = torch.load(
-            DATA_ROOT
-            / f'trajectories.{best_epoch_}'
-            / self._split
-            / f'{id_ // 1000:02}'
-            / f'{id_:05}.pth',
-        )
-
-        time_indices = list(range(trajectory['constellation']['data'].shape[0]))
-        full_constellation_data = self._load_constellation(
-            trajectory['constellation'],
+        id_, best_epoch_, trajectory = self._load_trajectory(index)
+        batch, full_constellation_data, full_tasks_data = self._build_batch(
+            index,
             id_,
-            time_indices,
-        )[2]
-        full_tasks_data = self._load_tasks(trajectory['taskset'], id_)[1]
-
-        if self.normalize:
-            full_constellation_data = (
-                (full_constellation_data - self._statistics.constellation_mean)
-                / (self._statistics.constellation_std + 1e-6)
-            )
-            full_tasks_data = (
-                (full_tasks_data - self._statistics.taskset_mean)
-                / (self._statistics.taskset_std + 1e-6)
-            )
+            best_epoch_,
+            trajectory,
+            return_full_data=True,
+        )
 
         positive_time_spans, negative_time_spans = self._parse_time_spans(
             trajectory['actions']['task_id'],

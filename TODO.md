@@ -1,75 +1,207 @@
 # 待办事项
 
-## 当前目标
+## 当前唯一主线
 
-当前项目目标从“继续堆叠旧复现实验记录”调整为：
+> 以正式评估协议下的 **Test 调度完成率** 为第一目标，探索如何提高
+> AEOS-Former 的 `CR/PCR/WCR`，同时监控 `PC_Wh`，避免用不可解释的功耗
+> 上升换取完成率。
 
-> 在保持论文复现口径清楚、实验记录可追溯的前提下，优先修正场景生成阶段的任务点位有效性问题，减少随机生成但物理上不可观测的无解任务。
+这里的“准确率”默认指调度完成率，不是训练过程中的动作分类 top-1
+accuracy。后续文档、实验和汇报必须优先使用 `CR`、`PCR`、`WCR` 的正式名称。
 
-这里的“任务成功率”优先对应 `CR`、`PCR`、`WCR` 等任务完成相关指标。当前需要先区分两类失败：
+benchmark 难度分层、物理可观测性统计和失败原因分析继续保留，但它们只是定位
+问题的诊断手段，不再作为项目的主要研究目标。项目主线应回到模型、监督信号、
+推理决策和专家迭代本身。
 
-- **场景无解导致的失败**：随机生成的观测点位在给定星座、时间窗、传感器和仿真约束下，没有任何卫星能够有效拍摄。这类任务不应简单归因于模型预测失败。
-- **模型调度导致的失败**：任务本身存在可观测机会，但模型没有及时分配、没有连续观测到完成，或引发能耗/传感器约束问题。
+## 当前正式基线
 
-下一阶段的核心目标是：在生成正式 `constellation + taskset` 场景时增加可观测性筛选，先判断随机任务点位是否至少存在可行观测机会，再进入训练、评估或论文对比。这样才能让 `CR/PCR/WCR` 更准确地反映调度模型能力，而不是被大量物理无解点位压低。
+当前主结果来自论文式 `JointModel` 200k 联合训练：
 
-## 当前统一口径
+| 模型 | Split | CR/% | PCR/% | WCR/% | PC_Wh |
+|---|---|---:|---:|---:|---:|
+| Stage2-200k | Val Seen | 36.81 | 39.69 | 36.81 | 88.92 |
+| Stage3-200k | Val Seen | 37.50 | 40.79 | 37.29 | 95.15 |
+| Stage2-200k | Val Unseen | 41.80 | 45.19 | 41.77 | 104.65 |
+| Stage3-200k | Val Unseen | 42.82 | 46.25 | 42.78 | 112.43 |
+| Stage2-200k | Test | 21.24 | 23.40 | 20.85 | 43.85 |
+| Stage3-200k | Test | 23.28 | 26.02 | 23.02 | 52.11 |
 
-当前 `TODO.md` 服从 `docs/实验复现报告.md` 中的主结论：
+当前判断：
 
-- 论文式 `JointModel` 200k 联合训练是当前正式对齐 AEOS-Former 的主线。
-- 早期 Tiny / CE-only 实验只作为流程跑通记录，不作为最终论文对齐依据。
-- `Stage2-200k` 更适合作为功耗受控的综合折中候选。
-- `Stage3-200k` 更适合作为完成率优先候选。
-- 当前本地 `TAT` 与论文表格口径仍未完全统一，因此临时比较优先使用 `CS_no_TAT`。
+- Val Seen 的 CR 约为 37%，Val Unseen 约为 43%，但 Test 只有约 23%。
+- Stage3-200k 的完成率高于 Stage2-200k，但功耗也更高。
+- 第一优先级是缩小 Test 泛化差距，而不是继续只抬高 Val Seen 或 Val Unseen。
+- 早期 Tiny / CE-only 结果只证明流程跑通，不与论文式联合训练结果直接混合比较。
+- 当前本地 `TAT` 与论文口径仍未完全统一，临时比较继续同时报告
+  `CR/PCR/WCR`、`PC_Wh` 和 `CS_no_TAT`。
 
-当前临时指标为：
+临时指标：
 
 ```text
 CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 ```
 
-注意：
+其中 `CR/PCR/WCR` 使用 0 到 1 的比例值。
 
-- `CR`、`PCR`、`WCR` 在公式中使用 0 到 1 的比例值，不使用百分数。
-- `PC` 优先使用 `PC_Wh`；如果原始输出只有 `PC`，再按 `PC_Wh = PC / 3600` 换算。
-- `CS_no_TAT` 只是当前排查和模型排序用的临时指标，不等同于论文最终 `CS`。
+## 当前失败诊断
 
-## 与实验复现报告的对齐结论
+历史 observable-filtered Stage3 Test 诊断中共有 9,433 个失败任务：
 
-当前需要避免的过时表述：
+| 失败原因 | 占比 |
+|---|---:|
+| 选过，但 Basilisk 仿真中始终没有真正可见 | 47.41% |
+| 模型从未选择 | 44.39% |
+| 已有进度，但连续观测时长不够 | 8.21% |
 
-- 不再把旧 200k CE-only 模型当作严格论文复现模型。
-- 不再把 Val Unseen 高于 Val Seen 简单写成“泛化能力已充分验证”。
-- 不再只看完成率而忽略 `PC_Wh` 上升。
-- 不再使用含义不清的本地 `TAT` 去判断是否已经完全对齐论文。
+这组数据不是当前正式 benchmark 结果，只作为问题定位证据。它说明下一阶段应优先
+解决“预测可行性与 Basilisk 不一致”和“任务覆盖不足”，而不是直接扩大模型规模。
 
-当前应采用的表述：
+## P0：建立固定、可解释的评估基线
 
-- 本地论文式联合训练已经获得较高任务完成率。
-- 任务完成率提升伴随功耗上升，属于完成率和能耗之间的折中。
-- 当前低 `CR/PCR/WCR` 中有相当一部分可能来自场景生成阶段的不可观测任务，而不是模型本身不会调度。
-- 后续目标应先在场景生成阶段筛掉物理上不可观测的任务点位，再讨论模型如何继续提高任务成功率。
+- [ ] 固定 Stage2-200k、Stage3-200k checkpoint 和正式 64 场景
+  Val Seen、Val Unseen、Test annotation。
+- [ ] 对每次实验统一输出 `CR/PCR/WCR/WPCR/TAT/PC_Wh/CS_no_TAT`。
+- [ ] 分开记录训练动作 top-1 accuracy 与 Basilisk 调度完成率，禁止混称 accuracy。
+- [ ] 在当前正式 tasksets 上重新统计三类失败：`never_selected`、
+  `selected_never_visible`、`insufficient_continuous_progress`。
+- [ ] 增加每个时间步的重复任务分配率、空动作比例、可行任务覆盖率和任务切换率。
+- [ ] 后续所有消融首先比较 Test CR，再检查 Val 泛化和 `PC_Wh` 变化。
 
-## 后续任务
+验收标准：同一 checkpoint 重复评估时使用相同 split、场景数、并行度、指标公式和
+汇总方式，结果能够追溯到具体 checkpoint、配置和输出目录。
 
-1. 检查当前场景生成流程，重点看 `tools/generate_constellations_and_tasksets.py` 以及相关 taskset/constellation 生成逻辑。
-2. 设计任务点位可观测性筛选：对随机生成的候选任务，判断在对应星座和时间窗内是否存在至少一次有效观测机会。
-3. 统计现有评估结果中不可观测任务占比，优先区分 `never_visible`、`energy_or_sensor_blocked`、`assigned_but_not_completed` 等失败原因。
-4. 生成新的筛选版场景或任务集，并记录筛选前后任务数量、可观测任务比例和数据划分分布。
-5. 用筛选版场景重新评估模型时，必须同时列出 `CR`、`PCR`、`WCR`、`PC_Wh` 和 `CS_no_TAT`，并明确说明这是“可观测性过滤后”的评估口径。
-6. 新实验结果必须记录到报告或独立摘要中，避免再次把长期过程记录堆进 `TODO.md`。
+## P1：校准 TimeModel 与 Basilisk 可行性
+
+目标：减少“模型选过任务，但真实仿真始终不可见”的失败。
+
+- [ ] 单独评估 `TimeModel` 的 precision、recall、FPR、FNR 和概率校准曲线。
+- [ ] 使用真实轨迹中的 `is_visible` 对比不同 feasibility threshold。
+- [ ] 统计模型高置信度选择但 Basilisk 从未可见的卫星—任务对，构建 hard negative。
+- [ ] 先做不重新训练的推理消融：对高置信度不可行任务使用 soft penalty 或 hard mask。
+- [ ] 检查传感器类型、姿态机动时间、电量、反作用轮状态和连续可见窗口是否被正确
+  反映到可行性预测。
+- [ ] 比较仅调整 threshold、重新训练 TimeModel、联合微调 `JointModel` 三种方案。
+
+验收标准：不仅报告 TimeModel 分类指标，还必须验证 Test `CR/PCR/WCR` 是否提高，
+并确认 `PC_Wh` 和空动作比例没有异常恶化。
+
+## P1：从逐卫星分类改进为星座级联合分配
+
+目标：减少不同卫星之间的任务冲突、重复争抢和全局资源分配不合理。
+
+- [ ] 统计当前确定性推理中多颗卫星同时选择同一任务的频率及其结果。
+- [ ] 基于现有 logits 实现不重新训练的 top-k 联合分配消融。
+- [ ] 比较 Hungarian matching、顺序选择加动态 mask、允许有限重复分配三种策略。
+- [ ] 对正在观测且接近完成的任务设置合理的持续分配优先级。
+- [ ] 若推理后处理有效，再设计星座级 assignment loss，而不是立即重写整个 Decoder。
+
+验收标准：记录重复分配率、任务覆盖率、任务切换率以及最终 Test CR 的变化，不能只
+报告动作分类 accuracy。
+
+## P1：改进动作监督和损失定义
+
+目标：避免把单条专家轨迹中的单个 `task_id` 当作唯一正确动作。
+
+- [ ] 统计空动作、热门任务和长尾任务的标签分布。
+- [ ] 判断同一状态是否存在多个物理可行、最终可成功的替代动作。
+- [ ] 比较 one-hot CE、带类别权重 CE、focal loss 和 soft target。
+- [ ] 尝试 success-weighted imitation，使高质量轨迹和最终成功动作权重更高。
+- [ ] 对模型高置信度但导致失败的动作加入 hard-negative 或 ranking 约束。
+- [ ] 分别扫描 `L_a/L_s/L_t` 权重，不再默认三项固定为 1 就是最优设置。
+
+验收标准：同时报告 `L_a/L_s/L_t`、动作 top-1 accuracy、TimeModel 指标和正式调度
+指标，确认离线 loss 改善能够转化为 Test CR 改善。
+
+## P2：针对失败状态进行 DAgger / 专家迭代
+
+目标：缓解训练只看到专家状态、推理却不断进入自身错误状态的 exposure bias。
+
+- [ ] 使用 Stage3 checkpoint 在训练场景上进行模型 rollout。
+- [ ] 提取 `never_selected`、`selected_never_visible` 和观测中途切换的关键状态。
+- [ ] 在这些状态上调用专家算法生成纠正动作或更优候选动作。
+- [ ] 将纠正样本按失败类型加入新一轮 annotation，不只按整条轨迹 `tau_e` 筛选。
+- [ ] 对 hard-but-solvable 场景提高采样权重，同时保留原始专家数据防止遗忘。
+- [ ] 用小规模 Stage4 消融确认有效后，再启动正式长训练。
+
+验收标准：明确记录新增状态数量、各失败类型比例、annotation 来源和 epoch 路由，
+并在相同 Test 协议下与 Stage3-200k 比较。
+
+## P2：增强连续观测和短时规划
+
+目标：减少“已有进度但没有连续观测到 duration”的失败和无意义任务切换。
+
+- [ ] 显式输入任务剩余观测时长、当前连续观测长度和距离截止时间的 slack。
+- [ ] 统计成功任务与失败任务的平均切换次数。
+- [ ] 对接近完成的任务增加 completion bonus 或 continuation bias。
+- [ ] 测试最小承诺时长和切换惩罚，并保留失去可见性时的退出机制。
+- [ ] 对 top-k 动作做轻量短时 rollout 或 beam search，避免只看当前一步 logits。
+
+验收标准：重点观察 `insufficient_continuous_progress` 占比、任务切换率、CR 和
+`PC_Wh`，防止通过长期锁定不可行任务造成反效果。
+
+## P2：训练课程与难度采样
+
+目标：提高 Test 泛化，而不是通过过滤正式评估任务制造更高分数。
+
+- [ ] 按 `任务数 / 卫星数`、可行任务比例、时间窗紧迫度建立场景难度标签。
+- [ ] 先在普通场景学习基本策略，再逐步混入困难和极难场景。
+- [ ] 对“物理可解但模型失败”的场景增加采样权重。
+- [ ] 保证 batch 内各难度层比例稳定，避免异常拥挤场景长期主导梯度。
+- [ ] 正式 Val/Test 保持原 annotation 和任务定义，不用过滤后的简单数据代替。
+
+验收标准：按难度层分别报告指标，同时保留原始正式 split 的总体结果。
+
+## P3：补充直接的物理相对特征
+
+目标：为卫星—任务配对提供更明确的物理归纳偏置，而不是只扩大网络宽度和深度。
+
+- [ ] 候选特征包括离轴角、下一可见窗口开始时间、预计窗口长度、任务 slack、
+  剩余 duration、姿态机动角、预计机动时间、电量余量和反作用轮余量。
+- [ ] 优先验证特征是否能从当前状态快速计算，并保证训练与评估计算一致。
+- [ ] 每次只加入一组特征做消融，避免无法判断收益来源。
+- [ ] 只有在数据、损失、推理和物理特征消融完成后，再考虑扩大模型或更换架构。
+
+## 推荐执行顺序
+
+1. 完成 P0，得到当前正式数据上的失败原因和推理行为基线。
+2. 不重新训练，测试 feasibility threshold 与星座级联合分配后处理。
+3. 选择最有效的推理改进，进行动作损失和 `L_a/L_s/L_t` 小规模消融。
+4. 构建失败状态 DAgger 数据，训练并评估小规模 Stage4。
+5. 再测试连续观测机制、课程学习和物理相对特征。
+6. 最后才考虑更大模型、强化学习或长时间全量训练。
+
+## 实验记录要求
+
+每个实验必须记录：
+
+```text
+实验目的：
+基线 checkpoint：
+训练 annotation：
+关键配置差异：
+评估 split / 场景数 / world_size：
+Val Seen  CR / PCR / WCR / PC_Wh：
+Val Unseen CR / PCR / WCR / PC_Wh：
+Test      CR / PCR / WCR / PC_Wh：
+三类失败原因占比：
+相对 Stage3-200k 的收益与代价：
+结论与下一步：
+```
+
+不允许只报告最优单个场景、只报告训练 loss、只报告 Val Unseen，或把功耗明显上升
+后的完成率增益写成“全面提升”。
 
 ## 当前托管任务
 
-- `taskset_filter_full_eval_4x_20260622_1236_r0` 到 `taskset_filter_full_eval_4x_20260622_1236_r3`：已完成 4 路并行重建完整评估划分的筛选版 `tasksets`，包括 `val_seen=500`、`val_unseen=500`、`test=1000`。旧任务集已归档到 `data/tasksets_unfiltered_20260622_122858`，新任务集输出到 `data/tasksets`，日志为 `work_dirs/taskset_filtering_logs/taskset_filter_full_eval_4x_20260622_1236_r*.log`。相关脚本集中放在 `scripts/taskset_filtering/`。
-- `stage3_observable_filtered_eval_20260622`：已完成最新 `paper_joint_stage3_200k` 检查点的筛选版 `tasksets` 评估，脚本为 `scripts/eval_observable_filtered/run_stage3_200k_96core_eval.sh`，输出目录为 `work_dirs/rl_eval_paper_joint_stage3_200k_96core_*_observable_filtered/`，汇总文件为 `work_dirs/eval_summaries/paper_joint_stage3_200k_no_tat_96core_observable_filtered.json`，结果摘要见 `docs/observable_filtered_stage3_eval_summary.md`。
+- 当前没有正在运行的托管训练或正式评估任务。
+- 下一次长任务启动前，必须在这里记录 Slurm job、命令或包装脚本、日志路径、
+  checkpoint 来源和预期输出目录。
 
-## 关键文档
+## 参考文档
 
-- `README.md`：项目入口、环境、数据、训练和评估说明。
-- `docs/实验复现报告.md`：当前复现实验结论和汇报口径。
-- `docs/aeos_former_shape_flow.md`：AEOS-Former 输入输出和张量形状流图。
-- `docs/AEOSFormer_Encoder_解析.md`：AEOS-Former 架构解释稿。
-- `docs/constellation_code_structure.md`：`constellation/` 代码结构和训练流程说明。
-- `docs/new_transformers_dataset_model.md`：`Dataset`、`JointDataset`、`Model`、`JointModel` 的关系说明。
+- `README.md`：环境、数据、训练和评估入口。
+- `docs/实验复现报告.md`：当前正式基线和论文对齐结论。
+- `docs/constellation_code_structure.md`：代码、训练和评估调用链。
+- `docs/new_transformers_dataset_model.md`：训练数据与模型损失关系。
+- `docs/aeos_former_shape_flow.md`：Encoder、TimeModel、Decoder 张量流。
+- `docs/observable_filtered_stage3_eval_summary.md`：历史可观测性过滤实验，仅作诊断参考。
