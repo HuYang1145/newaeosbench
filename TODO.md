@@ -201,7 +201,13 @@ Test      CR / PCR / WCR / PC_Wh：
 
 ## 当前托管任务
 
-- 当前没有正在运行的托管训练或正式评估任务。
+- `tmux` 会话：`aeos_timemodel_valscan8`
+  - 脚本：`scripts/run_timemodel_feasibility_val_scan_managed.sh`
+  - checkpoint：`work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`
+  - 范围：Val Seen / Val Unseen 各 8 场，`baseline / 0.1 / 0.2 / 0.3`
+  - 并行度：`environment.world_size=8`，不运行 Test
+  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8.log`
+  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8.json`
 - 最近完成：`aeos_timemodel_calib64`，输出位于
   `work_dirs/timemodel_calibration/{val_seen,val_unseen}_stage3_200k_64.json`。
 - 下一次长任务启动前，必须在这里记录 Slurm job、命令或包装脚本、日志路径、
