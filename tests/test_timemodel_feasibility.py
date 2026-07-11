@@ -129,6 +129,7 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
     metadata = eval_all.build_eval_metadata(
         split='val_seen',
         world_size=96,
+        max_scenes=8,
         load_model_from=['model.pth'],
         feasibility_threshold=0.25,
     )
@@ -136,6 +137,7 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
     assert metadata == {
         'split': 'val_seen',
         'world_size': 96,
+        'max_scenes': 8,
         'load_model_from': ['model.pth'],
         'feasibility_threshold': 0.25,
     }
@@ -151,12 +153,33 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
             'constellation/rl/config_eval.py',
             '--feasibility-threshold',
             '0.25',
+            '--max-scenes',
+            '8',
         ],
     )
 
     args = eval_all.parse_args()
 
     assert args.feasibility_threshold == 0.25
+    assert args.max_scenes == 8
+
+
+def test_limit_annotations_keeps_requested_prefix() -> None:
+    assert eval_all.limit_annotations([10, 20, 30], 2) == [10, 20]
+
+
+def test_limit_annotations_none_preserves_all_annotations() -> None:
+    annotations = [10, 20, 30]
+
+    assert eval_all.limit_annotations(annotations, None) is annotations
+
+
+@pytest.mark.parametrize('max_scenes', [0, -1])
+def test_limit_annotations_rejects_non_positive_limit(
+    max_scenes: int,
+) -> None:
+    with pytest.raises(ValueError, match='positive'):
+        eval_all.limit_annotations([10, 20, 30], max_scenes)
 
 
 def test_binary_calibration_metrics_match_hand_calculation() -> None:

@@ -28,6 +28,18 @@ from constellation.new_transformers.model import GLOBALS
 COMPLETION_RATE_THRESHOLD = 0.01
 
 
+def limit_annotations(
+    annotations: list[int],
+    max_scenes: int | None,
+) -> list[int]:
+    """限制评估场景数，用于不改变 annotation 的小规模消融。"""
+    if max_scenes is None:
+        return annotations
+    if max_scenes <= 0:
+        raise ValueError('max_scenes must be positive')
+    return annotations[:max_scenes]
+
+
 class EvalEnvironment(ControllerEnvironment):
 
     @classmethod
@@ -56,6 +68,7 @@ class EvalEnvironment(ControllerEnvironment):
         world_size: int,
         rank: int,
         retry_from: pathlib.Path | None = None,
+        max_scenes: int | None = None,
         gen_trajectory_dir: pathlib.Path | None = None,
         **kwargs,
     ) -> None:
@@ -77,6 +90,10 @@ class EvalEnvironment(ControllerEnvironment):
                 annotation for annotation in self._annotations if
                 completion_rates.get(annotation, 0) < COMPLETION_RATE_THRESHOLD
             ]
+        self._annotations = limit_annotations(
+            self._annotations,
+            max_scenes,
+        )
 
     @property
     def _index(self) -> int:
@@ -164,6 +181,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--load-from')
     parser.add_argument('--auto-resume', action='store_true')
     parser.add_argument('--retry-from', type=pathlib.Path, default=None)
+    parser.add_argument('--max-scenes', type=int, default=None)
     parser.add_argument('--feasibility-threshold', type=float, default=None)
     args = parser.parse_args()
     return args
@@ -185,6 +203,7 @@ def build_eval_metadata(
     *,
     split: str,
     world_size: int,
+    max_scenes: int | None,
     load_model_from: list[str],
     feasibility_threshold: float | None,
 ) -> dict[str, Any]:
@@ -192,6 +211,7 @@ def build_eval_metadata(
     return dict(
         split=split,
         world_size=world_size,
+        max_scenes=max_scenes,
         load_model_from=load_model_from,
         feasibility_threshold=feasibility_threshold,
     )
@@ -220,6 +240,7 @@ def main() -> None:
     metadata = build_eval_metadata(
         split=config.environment.split,
         world_size=config.environment.world_size,
+        max_scenes=args.max_scenes,
         load_model_from=args.load_model_from,
         feasibility_threshold=args.feasibility_threshold,
     )
@@ -230,6 +251,7 @@ def main() -> None:
 
     environment = EvalEnvironment.build(
         retry_from=args.retry_from,
+        max_scenes=args.max_scenes,
         gen_trajectory_dir=gen_trajectory_dir,
         **config.environment,
     )

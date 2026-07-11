@@ -17,7 +17,7 @@ mkdir -p "${output_dir}" work_dirs/eval_logs
 for split in val_seen val_unseen; do
   output="${output_dir}/${split}_stage3_200k_${max_scenes}.json"
   log="work_dirs/eval_logs/timemodel_calibration_${split}_${max_scenes}.log"
-  python tools/calibrate_timemodel_feasibility.py \
+  /home/hy/miniconda3/envs/aeos/bin/python tools/calibrate_timemodel_feasibility.py \
     "${checkpoint}" \
     --split "${split}" \
     --max-scenes "${max_scenes}" \
