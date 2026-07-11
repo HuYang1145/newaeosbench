@@ -1,4 +1,3 @@
-import os
 from asyncio import tasks
 from typing import Any, Iterable
 import einops
@@ -13,6 +12,7 @@ from todd.models.losses import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from todd.registries import InitWeightsMixin
 from constellation.data import SensorType
 from .dataset import Batch, JointBatch
+from .feasibility import apply_feasibility_threshold
 from .registries import ConstellationModelRegistry
 from .time_model import TimeModel
 from todd.runners import Memo, BaseRunner
@@ -293,11 +293,22 @@ class Transformer(nn.Module):
         return_logits: bool = True,
         use_constraint_module: bool = True,
         use_sdpa: bool = False,
+        feasibility_threshold: float | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if feasibility_threshold is not None and not use_constraint_module:
+            raise ValueError(
+                'feasibility threshold requires the constraint module',
+            )
+        if (
+            feasibility_threshold is not None
+            and not 0 <= feasibility_threshold <= 1
+        ):
+            raise ValueError('feasibility threshold must be in [0, 1]')
         self._return_logits = return_logits
         self._use_constraint_module = use_constraint_module
+        self._feasibility_threshold = feasibility_threshold
 
         time_embedding = sinusoidal_position_embedding(
             torch.arange(MAX_TIME_STEP),
@@ -407,10 +418,11 @@ class Transformer(nn.Module):
             return x
         null_logits, logits = outputs
 
-        tau_s = os.environ.get('AEOS_TAU_S')
-        if tau_s not in (None, '') and feasibility_logits is not None:
-            infeasible_mask = feasibility_logits.sigmoid() <= float(tau_s)
-            logits = logits.masked_fill(infeasible_mask, float('-inf'))
+        logits = apply_feasibility_threshold(
+            logits,
+            feasibility_logits,
+            self._feasibility_threshold,
+        )
 
         return null_logits, logits
 
@@ -449,6 +461,7 @@ class Model(nn.Module):
         use_constraint_module: bool = True,
         use_compile: bool = False,
         use_sdpa: bool = False,
+        feasibility_threshold: float | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -465,6 +478,7 @@ class Model(nn.Module):
             decoder_num_heads=decoder_num_heads,
             use_constraint_module=use_constraint_module,
             use_sdpa=use_sdpa,
+            feasibility_threshold=feasibility_threshold,
         )
         self._ce_loss = CrossEntropyLoss()
 

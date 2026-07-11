@@ -164,8 +164,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--load-from')
     parser.add_argument('--auto-resume', action='store_true')
     parser.add_argument('--retry-from', type=pathlib.Path, default=None)
+    parser.add_argument('--feasibility-threshold', type=float, default=None)
     args = parser.parse_args()
     return args
+
+
+def build_policy_kwargs(
+    load_model_from: list[str],
+    feasibility_threshold: float | None,
+) -> dict[str, Any]:
+    return dict(
+        load_model_from=load_model_from,
+        actor_model_kwargs=dict(
+            feasibility_threshold=feasibility_threshold,
+        ),
+    )
+
+
+def build_eval_metadata(
+    *,
+    split: str,
+    world_size: int,
+    load_model_from: list[str],
+    feasibility_threshold: float | None,
+) -> dict[str, Any]:
+    """记录影响评估可复现性的关键参数。"""
+    return dict(
+        split=split,
+        world_size=world_size,
+        load_model_from=load_model_from,
+        feasibility_threshold=feasibility_threshold,
+    )
 
 
 '''
@@ -188,6 +217,14 @@ def main() -> None:
     work_dir = pathlib.Path('work_dirs') / f'rl_eval_{args.name}'
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    metadata = build_eval_metadata(
+        split=config.environment.split,
+        world_size=config.environment.world_size,
+        load_model_from=args.load_model_from,
+        feasibility_threshold=args.feasibility_threshold,
+    )
+    json_dump(metadata, str(work_dir / 'eval_metadata.json'))
+
     gen_trajectory_dir = work_dir / config.environment.split
     gen_trajectory_dir.mkdir(parents=True, exist_ok=True)
 
@@ -207,7 +244,10 @@ def main() -> None:
         algorithm = PPO(
             Policy,
             environment,
-            policy_kwargs=dict(load_model_from=args.load_model_from),
+            policy_kwargs=build_policy_kwargs(
+                args.load_model_from,
+                args.feasibility_threshold,
+            ),
             tensorboard_log=str(work_dir),
             seed=args.seed,
             device=device,

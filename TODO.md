@@ -85,6 +85,14 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 验收标准：不仅报告 TimeModel 分类指标，还必须验证 Test `CR/PCR/WCR` 是否提高，
 并确认 `PC_Wh` 和空动作比例没有异常恶化。
 
+当前进度：已实现可配置的 `feasibility_threshold` 和离线校准工具，并移除
+旧 `AEOS_TAU_S` 环境变量入口。下一步只在 Val Seen / Val Unseen 选阈值，
+锁定后才进行一次 Test 正式评估，不使用 Test 调参。
+
+64+64 场离线校准已完成：Val Seen / Val Unseen 在阈值 `0.3` 时 F1 最高，
+但 recall 均只约为 `0.687`。因此下一步 Basilisk 验证保留
+`baseline / 0.1 / 0.2 / 0.3` 四组，依据 Val 调度指标而非单独 F1 选最终阈值。
+
 ## P1：从逐卫星分类改进为星座级联合分配
 
 目标：减少不同卫星之间的任务冲突、重复争抢和全局资源分配不合理。
@@ -194,6 +202,8 @@ Test      CR / PCR / WCR / PC_Wh：
 ## 当前托管任务
 
 - 当前没有正在运行的托管训练或正式评估任务。
+- 最近完成：`aeos_timemodel_calib64`，输出位于
+  `work_dirs/timemodel_calibration/{val_seen,val_unseen}_stage3_200k_64.json`。
 - 下一次长任务启动前，必须在这里记录 Slurm job、命令或包装脚本、日志路径、
   checkpoint 来源和预期输出目录。
 
