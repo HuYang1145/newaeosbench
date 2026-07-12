@@ -212,7 +212,7 @@ Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 待启动：`aeos_timemodel_soft_scan8`，脚本
+- 正在运行（2026-07-12 04:36 EDT 启动）：`aeos_timemodel_soft_scan8`，脚本
   `scripts/run_timemodel_feasibility_soft_penalty_scan_managed.sh`，使用 Stage3-200k，
   Val Seen / Val Unseen 各 8 场，固定概率阈值 `0.03`，扫描惩罚强度
   `0.25 / 0.5 / 1.0`。日志写入 `work_dirs/eval_logs/`，汇总写入
