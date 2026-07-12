@@ -1,0 +1,3 @@
+[submodule "third_party/gnn_references/wheatley"]
+	path = third_party/gnn_references/wheatley
+	url = https://github.com/jolibrain/wheatley.git
