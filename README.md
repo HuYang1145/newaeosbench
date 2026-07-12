@@ -749,7 +749,7 @@ Policy 加载 AEOS-Former 检查点
 Evaluators 输出 CR/PCR/WCR/TAT/PC
         |
         v
-tools/summarize_no_tat_eval.py 汇总 CS_no_TAT
+tools/summarize_eval.py 统一汇总 CS_paper 与各单项指标
 ```
 
 ## 当前校准评估口径

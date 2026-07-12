@@ -40,7 +40,7 @@ run_eval() {
     --load-model-from "${checkpoint}" \
     "${threshold_args[@]}" 2>&1 | tee "${log_path}"
 
-  /home/hy/miniconda3/envs/aeos/bin/python tools/summarize_no_tat_eval.py \
+  /home/hy/miniconda3/envs/aeos/bin/python tools/summarize_eval.py \
     --output "${summary_path}" \
     "work_dirs/rl_eval_${run_name}/${split}" 2>&1 | tee -a "${log_path}"
 }
