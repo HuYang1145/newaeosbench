@@ -14,6 +14,7 @@ export XDG_CACHE_HOME=/tmp/aeos_cache
 checkpoint="${CHECKPOINT:-work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth}"
 max_scenes="${MAX_SCENES:-8}"
 eval_world_size="${EVAL_WORLD_SIZE:-${max_scenes}}"
+run_tag="${RUN_TAG:-policy_fix}"
 
 mkdir -p work_dirs/eval_logs work_dirs/eval_summaries
 
@@ -21,7 +22,7 @@ run_eval() {
   local split="$1"
   local label="$2"
   local threshold="$3"
-  local run_name="stage3_200k_feasibility_${label}_${split}_${max_scenes}"
+  local run_name="stage3_200k_feasibility_${label}_${split}_${max_scenes}_${run_tag}"
   local log_path="work_dirs/eval_logs/${run_name}.log"
   local summary_path="work_dirs/eval_summaries/${run_name}.json"
   local threshold_args=()

@@ -194,6 +194,8 @@ def build_policy_kwargs(
     return dict(
         load_model_from=load_model_from,
         actor_model_kwargs=dict(
+            use_constraint_module=True,
+            use_sdpa=True,
             feasibility_threshold=feasibility_threshold,
         ),
     )

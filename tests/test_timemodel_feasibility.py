@@ -1,11 +1,14 @@
 import sys
 
+from gymnasium import spaces
 import pytest
 import torch
+from torch import nn
 
 from constellation.new_transformers import feasibility
 from constellation.new_transformers.model import Transformer
 from constellation.rl import eval_all
+from constellation.rl import policy as policy_module
 
 
 def test_feasibility_gate_exists() -> None:
@@ -121,7 +124,43 @@ def test_eval_policy_kwargs_include_feasibility_threshold() -> None:
 
     assert kwargs == {
         'load_model_from': ['model.pth'],
-        'actor_model_kwargs': {'feasibility_threshold': 0.25},
+        'actor_model_kwargs': {
+            'use_constraint_module': True,
+            'use_sdpa': True,
+            'feasibility_threshold': 0.25,
+        },
+    }
+
+
+def test_policy_uses_actor_model_kwargs_during_actor_construction(
+    monkeypatch,
+) -> None:
+    class TinyActorCritic(nn.Module):
+
+        def __init__(
+            self,
+            *args,
+            actor_model_kwargs=None,
+            **kwargs,
+        ) -> None:
+            super().__init__(*args, **kwargs)
+            self.latent_dim_pi = 4
+            self.latent_dim_vf = 4
+            self.actor_model_kwargs = actor_model_kwargs
+
+    monkeypatch.setattr(policy_module, 'ActorCritic', TinyActorCritic)
+    policy = policy_module.Policy(
+        observation_space=spaces.Dict({
+            'dummy': spaces.Box(-1.0, 1.0, shape=(1,)),
+        }),
+        action_space=spaces.MultiDiscrete([2]),
+        lr_schedule=lambda _: 1e-3,
+        load_model_from=[],
+        actor_model_kwargs={'feasibility_threshold': 0.25},
+    )
+
+    assert policy.mlp_extractor.actor_model_kwargs == {
+        'feasibility_threshold': 0.25,
     }
 
 

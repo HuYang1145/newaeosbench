@@ -161,13 +161,17 @@ class Policy(ActorCriticPolicy):
         actor_model_kwargs: dict | None = None,
         **kwargs,
     ) -> None:
+        object.__setattr__(
+            self,
+            '_actor_model_kwargs',
+            actor_model_kwargs,
+        )
         super().__init__(  # type: ignore[misc]
             *args,
             ortho_init=False,
             features_extractor_class=FeatureExtractor,
             **kwargs,
         )
-        self._actor_model_kwargs = actor_model_kwargs
         if load_model_from:
             load_state_dict(
                 self.mlp_extractor.actor,  # type: ignore[arg-type]
