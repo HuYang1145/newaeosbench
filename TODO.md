@@ -2,16 +2,31 @@
 
 ## 当前唯一主线
 
-> 以正式评估协议下的 **Test 调度完成率** 为第一目标，探索如何提高
-> AEOS-Former 的 `CR/PCR/WCR`，同时监控 `PC_Wh`，避免用不可解释的功耗
-> 上升换取完成率。
+> 以正式评估协议下的 **paper-aligned 综合得分 `CS_paper` 越低越好**
+> 为最终目标，同时完整报告 `CR/PCR/WCR/TAT_s/PC_Wh`。不再把单独
+> Test CR 作为唯一优化目标。
 
 这里的“准确率”默认指调度完成率，不是训练过程中的动作分类 top-1
 accuracy。后续文档、实验和汇报必须优先使用 `CR`、`PCR`、`WCR` 的正式名称。
 
 benchmark 难度分层、物理可观测性统计和失败原因分析继续保留，但它们只是定位
-问题的诊断手段，不再作为项目的主要研究目标。项目主线应回到模型、监督信号、
-推理决策和专家迭代本身。
+问题的诊断手段。最终验收要看任务完成质量、周转时间和功耗的综合折中。
+
+### TAT 与 CS 统一口径
+
+官方代码的 `TurnAroundTimeEvaluator` 输出原始秒数，仿真上限为 3600 秒，
+因此论文表格中 `TAT/h=7.50` 不可能是真实小时。将表中 TAT 解释为
+`TAT_s / 100` 可以精确复现论文 Table 2 的 CS。当前统一使用：
+
+```text
+Q = 0.6*CR + 0.2*PCR + 0.2*WCR
+TAT_100s = TAT_s / 100
+CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
+         = Q^(-1) + TAT_s/700 + PC_Wh/100
+```
+
+`CR/PCR/WCR` 使用 0 到 1 的比例值。`CS_no_TAT` 仅保留为历史辅助指标，
+不再作为最终模型排序依据。
 
 ## 当前正式基线
 
@@ -32,16 +47,8 @@ benchmark 难度分层、物理可观测性统计和失败原因分析继续保�
 - Stage3-200k 的完成率高于 Stage2-200k，但功耗也更高。
 - 第一优先级是缩小 Test 泛化差距，而不是继续只抬高 Val Seen 或 Val Unseen。
 - 早期 Tiny / CE-only 结果只证明流程跑通，不与论文式联合训练结果直接混合比较。
-- 当前本地 `TAT` 与论文口径仍未完全统一，临时比较继续同时报告
-  `CR/PCR/WCR`、`PC_Wh` 和 `CS_no_TAT`。
-
-临时指标：
-
-```text
-CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
-```
-
-其中 `CR/PCR/WCR` 使用 0 到 1 的比例值。
+- 后续报告增加 `TAT_s`、`TAT_100s` 和 `CS_paper`，并保留各单项指标避免
+  综合分数掩盖退化。
 
 ## 当前失败诊断
 
@@ -60,12 +67,14 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 
 - [ ] 固定 Stage2-200k、Stage3-200k checkpoint 和正式 64 场景
   Val Seen、Val Unseen、Test annotation。
-- [ ] 对每次实验统一输出 `CR/PCR/WCR/WPCR/TAT/PC_Wh/CS_no_TAT`。
+- [ ] 对每次实验统一输出
+  `CR/PCR/WCR/WPCR/TAT_s/TAT_100s/PC_Wh/CS_paper`。
 - [ ] 分开记录训练动作 top-1 accuracy 与 Basilisk 调度完成率，禁止混称 accuracy。
 - [ ] 在当前正式 tasksets 上重新统计三类失败：`never_selected`、
   `selected_never_visible`、`insufficient_continuous_progress`。
 - [ ] 增加每个时间步的重复任务分配率、空动作比例、可行任务覆盖率和任务切换率。
-- [ ] 后续所有消融首先比较 Test CR，再检查 Val 泛化和 `PC_Wh` 变化。
+- [ ] 后续消融先在 Val Seen / Val Unseen 比较 `CS_paper`和全部单项，
+  锁定方案后只运行一次 Test。
 
 验收标准：同一 checkpoint 重复评估时使用相同 split、场景数、并行度、指标公式和
 汇总方式，结果能够追溯到具体 checkpoint、配置和输出目录。
@@ -86,12 +95,12 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 并确认 `PC_Wh` 和空动作比例没有异常恶化。
 
 当前进度：已实现可配置的 `feasibility_threshold` 和离线校准工具，并移除
-旧 `AEOS_TAU_S` 环境变量入口。下一步只在 Val Seen / Val Unseen 选阈值，
-锁定后才进行一次 Test 正式评估，不使用 Test 调参。
+旧 `AEOS_TAU_S` 环境变量入口。hard threshold 扫描和完整 64+64 场验证已完成。
 
-64+64 场离线校准已完成：Val Seen / Val Unseen 在阈值 `0.3` 时 F1 最高，
-但 recall 均只约为 `0.687`。因此下一步 Basilisk 验证保留
-`baseline / 0.1 / 0.2 / 0.3` 四组，依据 Val 调度指标而非单独 F1 选最终阈值。
+`0.1/0.2/0.3` 会严重过滤。`0.03` 在完整 Val Seen / Val Unseen 上小幅降低
+`CR/WCR`，但降低了 `TAT_s/PC_Wh`。按统一后的 `CS_paper`，Val Seen 约从
+`4.3596` 降到 `4.3549`，Val Unseen 约从 `4.1654` 降到 `4.1434`。
+这是很小的综合改善，hard mask 不再继续扫描；下一步优先测试更温和的 soft penalty。
 
 ## P1：从逐卫星分类改进为星座级联合分配
 
@@ -171,12 +180,12 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 
 ## 推荐执行顺序
 
-1. 完成 P0，得到当前正式数据上的失败原因和推理行为基线。
-2. 不重新训练，测试 feasibility threshold 与星座级联合分配后处理。
-3. 选择最有效的推理改进，进行动作损失和 `L_a/L_s/L_t` 小规模消融。
-4. 构建失败状态 DAgger 数据，训练并评估小规模 Stage4。
-5. 再测试连续观测机制、课程学习和物理相对特征。
-6. 最后才考虑更大模型、强化学习或长时间全量训练。
+1. 完成 `TAT_s -> TAT_100s -> CS_paper` 的统一汇总工具和回归测试。
+2. 不重新训练，将 hard mask 改为轻量 soft penalty，只在 Val 上扫少量惩罚强度。
+3. 如果 soft penalty 稳定降低 `CS_paper`，再进行完整 Val 并锁定配置。
+4. 若轻量后处理收益有限，使用 hard negatives 重新校准/训练 TimeModel。
+5. 星座级联合分配作为第二主线，优先解决重复分配和覆盖不足。
+6. DAgger、课程学习、额外物理特征和更大模型暂缓，不同时开多条主线。
 
 ## 实验记录要求
 
@@ -188,9 +197,9 @@ CS_no_TAT = (0.6*CR + 0.2*PCR + 0.2*WCR)^(-1) + PC_Wh/100
 训练 annotation：
 关键配置差异：
 评估 split / 场景数 / world_size：
-Val Seen  CR / PCR / WCR / PC_Wh：
-Val Unseen CR / PCR / WCR / PC_Wh：
-Test      CR / PCR / WCR / PC_Wh：
+Val Seen  CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
+Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
+Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 三类失败原因占比：
 相对 Stage3-200k 的收益与代价：
 结论与下一步：
@@ -201,16 +210,9 @@ Test      CR / PCR / WCR / PC_Wh：
 
 ## 当前托管任务
 
-- `tmux` 会话：`aeos_timemodel_threshold003_full_val`
-  - 脚本：`scripts/run_timemodel_feasibility_val_scan_managed.sh`
-  - checkpoint：`work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`
-  - 范围：Val Seen / Val Unseen 各 64 场，`threshold=0.03`
-  - 并行度：`environment.world_size=96`，不运行 Test
-  - 修复提交：`12e2543`，已确认阈值进入 `Policy` 内部 Actor
-  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_threshold_03_*_64_full_val.log`
-  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_threshold_03_*_64_full_val.json`
-- 最近完成：`aeos_timemodel_low_scan8`，`0.03` 是唯一在 Val Seen / Val Unseen
-  同时提高完成率并降低功耗的稳定候选，已进入完整 64+64 场验证。
+- 当前没有正在运行的托管训练或评估任务。
+- 最近完成：`aeos_timemodel_threshold003_full_val`，已完成 `threshold=0.03`
+  的 Val Seen / Val Unseen 各 64 场评估，结果见上文 TimeModel 进度。
 - 最近完成：`aeos_timemodel_valscan8_fix`，`0.1 / 0.2 / 0.3` 均显著降低
   Val Seen / Val Unseen 完成率，不进入完整 64 场评估。
 - 旧 `aeos_timemodel_valscan8` 已完成，但因 `actor_model_kwargs` 构建顺序错误，
