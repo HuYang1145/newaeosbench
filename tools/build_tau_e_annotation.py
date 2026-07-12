@@ -10,7 +10,7 @@
 本脚本的工作：
   读取基础标注，逐场景检查 data/trajectories.N 中候选轨迹的综合评分(CS)，
   CS ≤ tau_e 的轨迹被接受（epoch 更新为新轮次），否则保留旧 epoch。
-  CS = 1/(0.6*CR+0.2*PCR+0.2*WCR) + TAT_h/7 + PC_Wh/100，越小代表轨迹质量越好。
+  CS = 1/(0.6*CR+0.2*PCR+0.2*WCR) + TAT_100s/7 + PC_Wh/100，越小代表轨迹质量越好。
   输出新的标注 JSON 及可选摘要。
 """
 
@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--tat-scale',
         type=float,
-        default=3600.0,
-        help='Scale factor used to convert raw TAT into hours',
+        default=100.0,
+        help='Scale factor used to convert raw TAT_s into paper table units',
     )
     parser.add_argument(
         '--pc-scale',

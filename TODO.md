@@ -193,13 +193,13 @@ Seen 略差、Unseen 仅改善 `0.0006`，且总体 `CR/WCR` 略降。本方向�
 
 1. [已完成] `TAT_s -> TAT_100s -> CS_paper` 的统一汇总工具和回归测试。
 2. [已停止] hard mask 与 bounded soft penalty 的完整 Val 验证；不运行 Test。
-3. [下一主线] 修正 `build_tau_e_annotation.py` 的轨迹筛选口径，使 TAT 项严格为
-   `TAT_s/700`，增加论文公式回归测试，再重建新的 Stage2/Stage3 annotation。
-4. 先用现有轨迹只读比较新旧 annotation；确认后从明确 checkpoint 小规模重训，
-   再按相同 Val 协议验证，旧 annotation 和 checkpoint 全部保留。
-5. 若修正迭代训练仍不足，再使用 hard negatives 重训 TimeModel；当前 `0.03`
-   下 FPR 约 `89%–90%`，说明应改善监督与排序，而不是继续调阈值。
-6. 星座级联合分配作为后续主线，优先解决重复分配和覆盖不足。
+3. [已完成] 只修正 `build_tau_e_annotation.py` 的公式，使默认 TAT 项严格为
+   `TAT_s/700`，并增加回归测试。现有轨迹、训练 annotation 和 checkpoint 均不变。
+4. [下一主线] 先统计重复分配率、候选任务覆盖率和任务冲突图，判断当前逐卫星
+   独立 argmax 的损失，再设计轻量星座级联合分配消融。
+5. 并行研究 GNN/DRL 的动态候选图表示，但不在在线推理中调用 Basilisk；所需
+   可行关系只能来自已有模型分数、当前轻量状态或离线标签。
+6. 若结构诊断仍指向可行性判别，再使用 hard negatives 重训 TimeModel。
 7. DAgger、课程学习、在线物理特征和更大模型暂缓，不同时开多条主线。
 
 ## 实验记录要求
