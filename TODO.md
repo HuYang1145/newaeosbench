@@ -87,7 +87,7 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 - [ ] 使用真实轨迹中的 `is_visible` 对比不同 feasibility threshold。
 - [ ] 统计模型高置信度选择但 Basilisk 从未可见的卫星—任务对，构建 hard negative。
 - [x] 实现不重新训练的推理消融：hard mask 已验证；bounded soft penalty
-  已接入，待完成 Val 筛选。
+  已接入并完成 8+8 场筛选，`strength=1.0` 进入完整 Val。
 - [ ] 检查传感器类型、姿态机动时间、电量、反作用轮状态和连续可见窗口是否被正确
   反映到可行性预测。
 - [ ] 比较仅调整 threshold、重新训练 TimeModel、联合微调 `JointModel` 三种方案。
@@ -102,6 +102,11 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 `CR/WCR`，但降低了 `TAT_s/PC_Wh`。按统一后的 `CS_paper`，Val Seen 约从
 `4.3596` 降到 `4.3549`，Val Unseen 约从 `4.1654` 降到 `4.1434`。
 这是很小的综合改善，hard mask 不再继续扫描；下一步优先测试更温和的 soft penalty。
+
+soft penalty 的 8+8 场筛选已完成。`strength=1.0` 的 `CS_paper` 为 Seen
+`4.1048`、Unseen `4.1589`，对应 baseline 为 `4.2255`、`4.1632`。
+Seen 改善明显，Unseen 仅改善 `0.0043`，因此只把 `1.0` 送入完整 64+64 Val，
+暂不宣称方案有效。
 
 ## P1：从逐卫星分类改进为星座级联合分配
 
@@ -212,7 +217,11 @@ Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 正在运行（2026-07-12 04:36 EDT 启动）：`aeos_timemodel_soft_scan8`，脚本
+- 正在运行（2026-07-12 08:13 EDT 启动）：`aeos_timemodel_soft_full_val`，
+  使用 Stage3-200k、`threshold=0.03`、`strength=1.0`，Val Seen / Unseen
+  各 64 场、`world_size=64`。日志写入 `work_dirs/eval_logs/`，汇总写入
+  `work_dirs/eval_summaries/`。
+- 最近完成：`aeos_timemodel_soft_scan8`，脚本
   `scripts/run_timemodel_feasibility_soft_penalty_scan_managed.sh`，使用 Stage3-200k，
   Val Seen / Val Unseen 各 8 场，固定概率阈值 `0.03`，扫描惩罚强度
   `0.25 / 0.5 / 1.0`。日志写入 `work_dirs/eval_logs/`，汇总写入
