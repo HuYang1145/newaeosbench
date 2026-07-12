@@ -201,14 +201,16 @@ Test      CR / PCR / WCR / PC_Wh：
 
 ## 当前托管任务
 
-- `tmux` 会话：`aeos_timemodel_low_scan8`
+- `tmux` 会话：`aeos_timemodel_threshold003_full_val`
   - 脚本：`scripts/run_timemodel_feasibility_val_scan_managed.sh`
   - checkpoint：`work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`
-  - 范围：Val Seen / Val Unseen 各 8 场，`0.005 / 0.01 / 0.03 / 0.05`
-  - 并行度：`environment.world_size=8`，不运行 Test
+  - 范围：Val Seen / Val Unseen 各 64 场，`threshold=0.03`
+  - 并行度：`environment.world_size=96`，不运行 Test
   - 修复提交：`12e2543`，已确认阈值进入 `Policy` 内部 Actor
-  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8_low_threshold.log`
-  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8_low_threshold.json`
+  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_threshold_03_*_64_full_val.log`
+  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_threshold_03_*_64_full_val.json`
+- 最近完成：`aeos_timemodel_low_scan8`，`0.03` 是唯一在 Val Seen / Val Unseen
+  同时提高完成率并降低功耗的稳定候选，已进入完整 64+64 场验证。
 - 最近完成：`aeos_timemodel_valscan8_fix`，`0.1 / 0.2 / 0.3` 均显著降低
   Val Seen / Val Unseen 完成率，不进入完整 64 场评估。
 - 旧 `aeos_timemodel_valscan8` 已完成，但因 `actor_model_kwargs` 构建顺序错误，
