@@ -86,8 +86,8 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 - [ ] 单独评估 `TimeModel` 的 precision、recall、FPR、FNR 和概率校准曲线。
 - [ ] 使用真实轨迹中的 `is_visible` 对比不同 feasibility threshold。
 - [ ] 统计模型高置信度选择但 Basilisk 从未可见的卫星—任务对，构建 hard negative。
-- [x] 实现不重新训练的推理消融：hard mask 已验证；bounded soft penalty
-  已接入并完成 8+8 场筛选，`strength=1.0` 进入完整 Val。
+- [x] 完成不重新训练的推理消融：hard mask 与 bounded soft penalty 均已完成
+  64+64 Val；收益极小或不稳定，本方向停止，不运行 Test。
 - [ ] 检查传感器类型、姿态机动时间、电量、反作用轮状态和连续可见窗口是否被正确
   反映到可行性预测。
 - [ ] 比较仅调整 threshold、重新训练 TimeModel、联合微调 `JointModel` 三种方案。
@@ -107,6 +107,11 @@ soft penalty 的 8+8 场筛选已完成。`strength=1.0` 的 `CS_paper` 为 Seen
 `4.1048`、Unseen `4.1589`，对应 baseline 为 `4.2255`、`4.1632`。
 Seen 改善明显，Unseen 仅改善 `0.0043`，因此只把 `1.0` 送入完整 64+64 Val，
 暂不宣称方案有效。
+
+完整 64+64 Val 已证明小样本改善没有复现：soft penalty 的 Seen / Unseen
+`CS_paper` 为 `4.3609 / 4.1648`，baseline 为 `4.3596 / 4.1654`。
+Seen 略差、Unseen 仅改善 `0.0006`，且总体 `CR/WCR` 略降。本方向正式废止；
+实现与结果仅作为可复现实验保留，不继续扫 threshold/strength，也不运行 Test。
 
 ## P1：从逐卫星分类改进为星座级联合分配
 
@@ -187,12 +192,15 @@ Seen 改善明显，Unseen 仅改善 `0.0043`，因此只把 `1.0` 送入完整 
 ## 推荐执行顺序
 
 1. [已完成] `TAT_s -> TAT_100s -> CS_paper` 的统一汇总工具和回归测试。
-2. [进行中] 不重新训练，将 hard mask 改为 bounded soft penalty；固定概率阈值
-   `0.03`，仅扫描惩罚强度 `0.25 / 0.5 / 1.0`。
-3. 如果 soft penalty 稳定降低 `CS_paper`，再进行完整 Val 并锁定配置。
-4. 若轻量后处理收益有限，使用 hard negatives 重新校准/训练 TimeModel。
-5. 星座级联合分配作为第二主线，优先解决重复分配和覆盖不足。
-6. DAgger、课程学习、额外物理特征和更大模型暂缓，不同时开多条主线。
+2. [已停止] hard mask 与 bounded soft penalty 的完整 Val 验证；不运行 Test。
+3. [下一主线] 修正 `build_tau_e_annotation.py` 的轨迹筛选口径，使 TAT 项严格为
+   `TAT_s/700`，增加论文公式回归测试，再重建新的 Stage2/Stage3 annotation。
+4. 先用现有轨迹只读比较新旧 annotation；确认后从明确 checkpoint 小规模重训，
+   再按相同 Val 协议验证，旧 annotation 和 checkpoint 全部保留。
+5. 若修正迭代训练仍不足，再使用 hard negatives 重训 TimeModel；当前 `0.03`
+   下 FPR 约 `89%–90%`，说明应改善监督与排序，而不是继续调阈值。
+6. 星座级联合分配作为后续主线，优先解决重复分配和覆盖不足。
+7. DAgger、课程学习、在线物理特征和更大模型暂缓，不同时开多条主线。
 
 ## 实验记录要求
 
@@ -217,10 +225,10 @@ Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 正在运行（2026-07-12 08:13 EDT 启动）：`aeos_timemodel_soft_full_val`，
-  使用 Stage3-200k、`threshold=0.03`、`strength=1.0`，Val Seen / Unseen
-  各 64 场、`world_size=64`。日志写入 `work_dirs/eval_logs/`，汇总写入
-  `work_dirs/eval_summaries/`。
+- 当前没有正在运行的托管任务。
+- 最近完成：`aeos_timemodel_soft_full_val`，Stage3-200k、`threshold=0.03`、
+  `strength=1.0`，Val Seen / Unseen 各 64 场、`world_size=64`。结果未稳定改善，
+  soft penalty 方向停止。
 - 最近完成：`aeos_timemodel_soft_scan8`，脚本
   `scripts/run_timemodel_feasibility_soft_penalty_scan_managed.sh`，使用 Stage3-200k，
   Val Seen / Val Unseen 各 8 场，固定概率阈值 `0.03`，扫描惩罚强度
