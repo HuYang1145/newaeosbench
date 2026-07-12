@@ -201,14 +201,16 @@ Test      CR / PCR / WCR / PC_Wh：
 
 ## 当前托管任务
 
-- `tmux` 会话：`aeos_timemodel_valscan8_fix`
+- `tmux` 会话：`aeos_timemodel_low_scan8`
   - 脚本：`scripts/run_timemodel_feasibility_val_scan_managed.sh`
   - checkpoint：`work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`
-  - 范围：Val Seen / Val Unseen 各 8 场，`baseline / 0.1 / 0.2 / 0.3`
+  - 范围：Val Seen / Val Unseen 各 8 场，`0.005 / 0.01 / 0.03 / 0.05`
   - 并行度：`environment.world_size=8`，不运行 Test
   - 修复提交：`12e2543`，已确认阈值进入 `Policy` 内部 Actor
-  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8_policy_fix.log`
-  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8_policy_fix.json`
+  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8_low_threshold.log`
+  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8_low_threshold.json`
+- 最近完成：`aeos_timemodel_valscan8_fix`，`0.1 / 0.2 / 0.3` 均显著降低
+  Val Seen / Val Unseen 完成率，不进入完整 64 场评估。
 - 旧 `aeos_timemodel_valscan8` 已完成，但因 `actor_model_kwargs` 构建顺序错误，
   阈值未进入 Actor，仅 baseline 可作为参考，三组阈值结果作废。
 - 最近完成：`aeos_timemodel_calib64`，输出位于
