@@ -201,13 +201,16 @@ Test      CR / PCR / WCR / PC_Wh：
 
 ## 当前托管任务
 
-- `tmux` 会话：`aeos_timemodel_valscan8`
+- `tmux` 会话：`aeos_timemodel_valscan8_fix`
   - 脚本：`scripts/run_timemodel_feasibility_val_scan_managed.sh`
   - checkpoint：`work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`
   - 范围：Val Seen / Val Unseen 各 8 场，`baseline / 0.1 / 0.2 / 0.3`
   - 并行度：`environment.world_size=8`，不运行 Test
-  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8.log`
-  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8.json`
+  - 修复提交：`12e2543`，已确认阈值进入 `Policy` 内部 Actor
+  - 日志：`work_dirs/eval_logs/stage3_200k_feasibility_*_8_policy_fix.log`
+  - 输出：`work_dirs/eval_summaries/stage3_200k_feasibility_*_8_policy_fix.json`
+- 旧 `aeos_timemodel_valscan8` 已完成，但因 `actor_model_kwargs` 构建顺序错误，
+  阈值未进入 Actor，仅 baseline 可作为参考，三组阈值结果作废。
 - 最近完成：`aeos_timemodel_calib64`，输出位于
   `work_dirs/timemodel_calibration/{val_seen,val_unseen}_stage3_200k_64.json`。
 - 下一次长任务启动前，必须在这里记录 Slurm job、命令或包装脚本、日志路径、
