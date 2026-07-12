@@ -15,6 +15,7 @@ checkpoint="${CHECKPOINT:-work_dirs/paper_joint_stage3_200k/checkpoints/iter_200
 max_scenes="${MAX_SCENES:-8}"
 eval_world_size="${EVAL_WORLD_SIZE:-${max_scenes}}"
 run_tag="${RUN_TAG:-policy_fix}"
+thresholds="${THRESHOLDS:-none 0.1 0.2 0.3}"
 
 mkdir -p work_dirs/eval_logs work_dirs/eval_summaries
 
@@ -45,8 +46,12 @@ run_eval() {
 }
 
 for split in val_seen val_unseen; do
-  run_eval "${split}" baseline none
-  run_eval "${split}" threshold_010 0.1
-  run_eval "${split}" threshold_020 0.2
-  run_eval "${split}" threshold_030 0.3
+  for threshold in ${thresholds}; do
+    if [[ "${threshold}" == "none" ]]; then
+      label="baseline"
+    else
+      label="threshold_${threshold#0.}"
+    fi
+    run_eval "${split}" "${label}" "${threshold}"
+  done
 done
