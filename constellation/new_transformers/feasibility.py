@@ -3,6 +3,7 @@
 import torch
 
 __all__ = [
+    'apply_feasibility_penalty',
     'apply_feasibility_threshold',
     'binary_calibration_metrics',
     'hard_negative_indices',
@@ -30,6 +31,34 @@ def apply_feasibility_threshold(
 
     infeasible = feasibility_logits.sigmoid() <= threshold
     return task_logits.masked_fill(infeasible, float('-inf'))
+
+
+def apply_feasibility_penalty(
+    task_logits: torch.Tensor,
+    feasibility_logits: torch.Tensor | None,
+    *,
+    threshold: float | None,
+    strength: float | None,
+) -> torch.Tensor:
+    """对低于目标概率的任务施加有上限的连续惩罚。"""
+    if threshold is None and strength is None:
+        return task_logits
+    if threshold is None or strength is None:
+        raise ValueError('penalty threshold and strength must be set together')
+    if not 0 < threshold <= 1:
+        raise ValueError('penalty threshold must be in (0, 1]')
+    if strength < 0:
+        raise ValueError('penalty strength must be non-negative')
+    if feasibility_logits is None:
+        raise ValueError(
+            'feasibility_logits are required when penalty is enabled',
+        )
+    if strength == 0:
+        return task_logits
+
+    probabilities = feasibility_logits.sigmoid()
+    deficit = ((threshold - probabilities) / threshold).clamp(0, 1)
+    return task_logits - strength * deficit
 
 
 def binary_calibration_metrics(

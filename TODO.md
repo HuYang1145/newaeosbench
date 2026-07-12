@@ -67,7 +67,7 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 
 - [ ] 固定 Stage2-200k、Stage3-200k checkpoint 和正式 64 场景
   Val Seen、Val Unseen、Test annotation。
-- [ ] 对每次实验统一输出
+- [x] 对每次实验统一输出
   `CR/PCR/WCR/WPCR/TAT_s/TAT_100s/PC_Wh/CS_paper`。
 - [ ] 分开记录训练动作 top-1 accuracy 与 Basilisk 调度完成率，禁止混称 accuracy。
 - [ ] 在当前正式 tasksets 上重新统计三类失败：`never_selected`、
@@ -86,7 +86,8 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 - [ ] 单独评估 `TimeModel` 的 precision、recall、FPR、FNR 和概率校准曲线。
 - [ ] 使用真实轨迹中的 `is_visible` 对比不同 feasibility threshold。
 - [ ] 统计模型高置信度选择但 Basilisk 从未可见的卫星—任务对，构建 hard negative。
-- [ ] 先做不重新训练的推理消融：对高置信度不可行任务使用 soft penalty 或 hard mask。
+- [x] 实现不重新训练的推理消融：hard mask 已验证；bounded soft penalty
+  已接入，待完成 Val 筛选。
 - [ ] 检查传感器类型、姿态机动时间、电量、反作用轮状态和连续可见窗口是否被正确
   反映到可行性预测。
 - [ ] 比较仅调整 threshold、重新训练 TimeModel、联合微调 `JointModel` 三种方案。
@@ -180,8 +181,9 @@ CS_paper = Q^(-1) + TAT_100s/7 + PC_Wh/100
 
 ## 推荐执行顺序
 
-1. 完成 `TAT_s -> TAT_100s -> CS_paper` 的统一汇总工具和回归测试。
-2. 不重新训练，将 hard mask 改为轻量 soft penalty，只在 Val 上扫少量惩罚强度。
+1. [已完成] `TAT_s -> TAT_100s -> CS_paper` 的统一汇总工具和回归测试。
+2. [进行中] 不重新训练，将 hard mask 改为 bounded soft penalty；固定概率阈值
+   `0.03`，仅扫描惩罚强度 `0.25 / 0.5 / 1.0`。
 3. 如果 soft penalty 稳定降低 `CS_paper`，再进行完整 Val 并锁定配置。
 4. 若轻量后处理收益有限，使用 hard negatives 重新校准/训练 TimeModel。
 5. 星座级联合分配作为第二主线，优先解决重复分配和覆盖不足。
@@ -210,7 +212,11 @@ Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 当前没有正在运行的托管训练或评估任务。
+- 待启动：`aeos_timemodel_soft_scan8`，脚本
+  `scripts/run_timemodel_feasibility_soft_penalty_scan_managed.sh`，使用 Stage3-200k，
+  Val Seen / Val Unseen 各 8 场，固定概率阈值 `0.03`，扫描惩罚强度
+  `0.25 / 0.5 / 1.0`。日志写入 `work_dirs/eval_logs/`，汇总写入
+  `work_dirs/eval_summaries/`。
 - 最近完成：`aeos_timemodel_threshold003_full_val`，已完成 `threshold=0.03`
   的 Val Seen / Val Unseen 各 64 场评估，结果见上文 TimeModel 进度。
 - 最近完成：`aeos_timemodel_valscan8_fix`，`0.1 / 0.2 / 0.3` 均显著降低

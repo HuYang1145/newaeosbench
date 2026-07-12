@@ -183,6 +183,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--retry-from', type=pathlib.Path, default=None)
     parser.add_argument('--max-scenes', type=int, default=None)
     parser.add_argument('--feasibility-threshold', type=float, default=None)
+    parser.add_argument(
+        '--feasibility-penalty-threshold',
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        '--feasibility-penalty-strength',
+        type=float,
+        default=None,
+    )
     args = parser.parse_args()
     return args
 
@@ -190,6 +200,9 @@ def parse_args() -> argparse.Namespace:
 def build_policy_kwargs(
     load_model_from: list[str],
     feasibility_threshold: float | None,
+    *,
+    feasibility_penalty_threshold: float | None,
+    feasibility_penalty_strength: float | None,
 ) -> dict[str, Any]:
     return dict(
         load_model_from=load_model_from,
@@ -197,6 +210,8 @@ def build_policy_kwargs(
             use_constraint_module=True,
             use_sdpa=True,
             feasibility_threshold=feasibility_threshold,
+            feasibility_penalty_threshold=feasibility_penalty_threshold,
+            feasibility_penalty_strength=feasibility_penalty_strength,
         ),
     )
 
@@ -208,6 +223,8 @@ def build_eval_metadata(
     max_scenes: int | None,
     load_model_from: list[str],
     feasibility_threshold: float | None,
+    feasibility_penalty_threshold: float | None,
+    feasibility_penalty_strength: float | None,
 ) -> dict[str, Any]:
     """记录影响评估可复现性的关键参数。"""
     return dict(
@@ -216,6 +233,8 @@ def build_eval_metadata(
         max_scenes=max_scenes,
         load_model_from=load_model_from,
         feasibility_threshold=feasibility_threshold,
+        feasibility_penalty_threshold=feasibility_penalty_threshold,
+        feasibility_penalty_strength=feasibility_penalty_strength,
     )
 
 
@@ -245,6 +264,8 @@ def main() -> None:
         max_scenes=args.max_scenes,
         load_model_from=args.load_model_from,
         feasibility_threshold=args.feasibility_threshold,
+        feasibility_penalty_threshold=args.feasibility_penalty_threshold,
+        feasibility_penalty_strength=args.feasibility_penalty_strength,
     )
     json_dump(metadata, str(work_dir / 'eval_metadata.json'))
 
@@ -271,6 +292,10 @@ def main() -> None:
             policy_kwargs=build_policy_kwargs(
                 args.load_model_from,
                 args.feasibility_threshold,
+                feasibility_penalty_threshold=(
+                    args.feasibility_penalty_threshold
+                ),
+                feasibility_penalty_strength=args.feasibility_penalty_strength,
             ),
             tensorboard_log=str(work_dir),
             seed=args.seed,

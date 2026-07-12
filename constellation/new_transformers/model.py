@@ -12,7 +12,10 @@ from todd.models.losses import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from todd.registries import InitWeightsMixin
 from constellation.data import SensorType
 from .dataset import Batch, JointBatch
-from .feasibility import apply_feasibility_threshold
+from .feasibility import (
+    apply_feasibility_penalty,
+    apply_feasibility_threshold,
+)
 from .registries import ConstellationModelRegistry
 from .time_model import TimeModel
 from todd.runners import Memo, BaseRunner
@@ -294,9 +297,20 @@ class Transformer(nn.Module):
         use_constraint_module: bool = True,
         use_sdpa: bool = False,
         feasibility_threshold: float | None = None,
+        feasibility_penalty_threshold: float | None = None,
+        feasibility_penalty_strength: float | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        penalty_enabled = (
+            feasibility_penalty_threshold is not None
+            or feasibility_penalty_strength is not None
+        )
+        if feasibility_threshold is not None and penalty_enabled:
+            raise ValueError(
+                'hard threshold and soft penalty cannot be enabled '
+                'simultaneously',
+            )
         if feasibility_threshold is not None and not use_constraint_module:
             raise ValueError(
                 'feasibility threshold requires the constraint module',
@@ -306,9 +320,32 @@ class Transformer(nn.Module):
             and not 0 <= feasibility_threshold <= 1
         ):
             raise ValueError('feasibility threshold must be in [0, 1]')
+        if penalty_enabled and not use_constraint_module:
+            raise ValueError(
+                'feasibility penalty requires the constraint module',
+            )
+        if (
+            (feasibility_penalty_threshold is None)
+            != (feasibility_penalty_strength is None)
+        ):
+            raise ValueError(
+                'penalty threshold and strength must be set together',
+            )
+        if (
+            feasibility_penalty_threshold is not None
+            and not 0 < feasibility_penalty_threshold <= 1
+        ):
+            raise ValueError('penalty threshold must be in (0, 1]')
+        if (
+            feasibility_penalty_strength is not None
+            and feasibility_penalty_strength < 0
+        ):
+            raise ValueError('penalty strength must be non-negative')
         self._return_logits = return_logits
         self._use_constraint_module = use_constraint_module
         self._feasibility_threshold = feasibility_threshold
+        self._feasibility_penalty_threshold = feasibility_penalty_threshold
+        self._feasibility_penalty_strength = feasibility_penalty_strength
 
         time_embedding = sinusoidal_position_embedding(
             torch.arange(MAX_TIME_STEP),
@@ -423,6 +460,12 @@ class Transformer(nn.Module):
             feasibility_logits,
             self._feasibility_threshold,
         )
+        logits = apply_feasibility_penalty(
+            logits,
+            feasibility_logits,
+            threshold=self._feasibility_penalty_threshold,
+            strength=self._feasibility_penalty_strength,
+        )
 
         return null_logits, logits
 
@@ -462,6 +505,8 @@ class Model(nn.Module):
         use_compile: bool = False,
         use_sdpa: bool = False,
         feasibility_threshold: float | None = None,
+        feasibility_penalty_threshold: float | None = None,
+        feasibility_penalty_strength: float | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -479,6 +524,8 @@ class Model(nn.Module):
             use_constraint_module=use_constraint_module,
             use_sdpa=use_sdpa,
             feasibility_threshold=feasibility_threshold,
+            feasibility_penalty_threshold=feasibility_penalty_threshold,
+            feasibility_penalty_strength=feasibility_penalty_strength,
         )
         self._ce_loss = CrossEntropyLoss()
 

@@ -78,6 +78,54 @@ def test_all_masked_tasks_fall_back_to_null_action() -> None:
     assert all_logits.argmax(-1).item() == 0
 
 
+def test_bounded_soft_penalty_only_reduces_low_probability_logits() -> None:
+    probabilities = torch.tensor([[0.003, 0.015, 0.03, 0.06]])
+    feasibility_logits = torch.logit(probabilities)
+
+    output = feasibility.apply_feasibility_penalty(
+        torch.zeros_like(feasibility_logits),
+        feasibility_logits,
+        threshold=0.03,
+        strength=2.0,
+    )
+
+    assert torch.isfinite(output).all()
+    assert output == pytest.approx(
+        torch.tensor([[-1.8, -1.0, 0.0, 0.0]]),
+        abs=1e-6,
+    )
+
+
+def test_soft_penalty_disabled_preserves_logits() -> None:
+    logits = torch.tensor([[1.0, 2.0]])
+
+    output = feasibility.apply_feasibility_penalty(
+        logits,
+        torch.zeros_like(logits),
+        threshold=None,
+        strength=None,
+    )
+
+    assert output is logits
+
+
+@pytest.mark.parametrize(
+    ('threshold', 'strength'),
+    [(0.03, None), (None, 0.5), (0.0, 0.5), (1.01, 0.5), (0.03, -0.1)],
+)
+def test_soft_penalty_rejects_invalid_configuration(
+    threshold: float | None,
+    strength: float | None,
+) -> None:
+    with pytest.raises(ValueError):
+        feasibility.apply_feasibility_penalty(
+            torch.zeros(1, 1),
+            torch.zeros(1, 1),
+            threshold=threshold,
+            strength=strength,
+        )
+
+
 def _build_transformer(**kwargs) -> Transformer:
     return Transformer(
         sensor_type_embedding_dim=2,
@@ -100,6 +148,25 @@ def test_transformer_stores_configured_feasibility_threshold() -> None:
     assert transformer._feasibility_threshold == 0.25
 
 
+def test_transformer_stores_configured_feasibility_penalty() -> None:
+    transformer = _build_transformer(
+        feasibility_penalty_threshold=0.03,
+        feasibility_penalty_strength=0.5,
+    )
+
+    assert transformer._feasibility_penalty_threshold == 0.03
+    assert transformer._feasibility_penalty_strength == 0.5
+
+
+def test_transformer_rejects_simultaneous_hard_and_soft_constraints() -> None:
+    with pytest.raises(ValueError, match='simultaneously'):
+        _build_transformer(
+            feasibility_threshold=0.03,
+            feasibility_penalty_threshold=0.03,
+            feasibility_penalty_strength=0.5,
+        )
+
+
 def test_transformer_rejects_threshold_without_constraint_module() -> None:
     with pytest.raises(ValueError, match='constraint module'):
         _build_transformer(
@@ -116,11 +183,16 @@ def test_transformer_rejects_threshold_outside_probability_range(
         _build_transformer(feasibility_threshold=threshold)
 
 
-def test_eval_policy_kwargs_include_feasibility_threshold() -> None:
+def test_eval_policy_kwargs_include_feasibility_constraints() -> None:
     build_policy_kwargs = getattr(eval_all, 'build_policy_kwargs', None)
     assert callable(build_policy_kwargs)
 
-    kwargs = build_policy_kwargs(['model.pth'], 0.25)
+    kwargs = build_policy_kwargs(
+        ['model.pth'],
+        0.25,
+        feasibility_penalty_threshold=None,
+        feasibility_penalty_strength=None,
+    )
 
     assert kwargs == {
         'load_model_from': ['model.pth'],
@@ -128,6 +200,8 @@ def test_eval_policy_kwargs_include_feasibility_threshold() -> None:
             'use_constraint_module': True,
             'use_sdpa': True,
             'feasibility_threshold': 0.25,
+            'feasibility_penalty_threshold': None,
+            'feasibility_penalty_strength': None,
         },
     }
 
@@ -171,6 +245,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         max_scenes=8,
         load_model_from=['model.pth'],
         feasibility_threshold=0.25,
+        feasibility_penalty_threshold=None,
+        feasibility_penalty_strength=None,
     )
 
     assert metadata == {
@@ -179,6 +255,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         'max_scenes': 8,
         'load_model_from': ['model.pth'],
         'feasibility_threshold': 0.25,
+        'feasibility_penalty_threshold': None,
+        'feasibility_penalty_strength': None,
     }
 
 
@@ -192,6 +270,10 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
             'constellation/rl/config_eval.py',
             '--feasibility-threshold',
             '0.25',
+            '--feasibility-penalty-threshold',
+            '0.03',
+            '--feasibility-penalty-strength',
+            '0.5',
             '--max-scenes',
             '8',
         ],
@@ -200,6 +282,8 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
     args = eval_all.parse_args()
 
     assert args.feasibility_threshold == 0.25
+    assert args.feasibility_penalty_threshold == 0.03
+    assert args.feasibility_penalty_strength == 0.5
     assert args.max_scenes == 8
 
 
