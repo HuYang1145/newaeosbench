@@ -59,8 +59,8 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] 配置第一阶段训练：冻结原模型，只用现有轨迹监督训练 35,105 个图头参数。
 - [x] 保留动作 CE，并增加 bounded 重复冲突和专家任务覆盖辅助损失。
 - [x] 使用软损失保留有限重复能力，不做绝对一对一硬约束。
-- [x] 完成 51 项相关测试、真实 forward/backward/step 和 100 次 CPU 延迟基准。
-- [ ] 在 Slurm 运行 10k iter 第一阶段训练；当前账号尚无 `groupA/groupB` Unix 组权限。
+- [x] 完成 52 项相关测试、真实 forward/backward/step 和 100 次 CPU 延迟基准。
+- [ ] 在 `server-10` 运行 10k iter 第一阶段训练；当前已用 4 张 RTX 4090 启动。
 - [ ] 先评估 Val Seen/Unseen 各 8 场，通过后再跑各 64 场。
 - [ ] 完整 Val 有稳定收益后，只运行一次 Test；在此之前不使用 Test 调参。
 
@@ -102,12 +102,15 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 当前没有正在运行的托管任务。
-- P0 训练脚本已经通过语法与配置检查，但 `sbatch --test-only` 返回
-  `User's group not permitted to use this partition`。用户 `hy` 当前只属于 Unix 组
-  `hy`，需要加入 `groupA` 或 `groupB` 后才能提交。
-- 待提交脚本：`scripts/train_assignment_head_p0_slurm.sh`；训练完成后提交
-  `scripts/eval_assignment_head_p0_8_slurm.sh`。
+- 当前有 1 个正在运行的托管任务。
+- P0 第一阶段训练正在 `server-10` 直接运行，不经过 Slurm。服务器为用户自行使用，
+  `groupA/groupB` 权限不影响本机实验。
+- tmux：`aeos_assign_p0`；4 张 RTX 4090；目标 `10,000 iter`。
+- 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；目标 checkpoint：
+  `work_dirs/assignment_head_p0_c020_cov010_10k/checkpoints/iter_10000/model.pth`。
+- 2026-07-13 03:54 EDT 已运行到 `Iter 100/10000`，当时 ETA 约 1 小时 15 分钟。
+- 训练完成后运行 `scripts/eval_assignment_head_p0_8_slurm.sh` 中的 8+8 Val 命令；
+  在 `server-10` 上直接以普通 Bash 脚本启动即可，`#SBATCH` 行仅作为注释。
 - 最近完成：`aeos_stage3_coordination_diag64`，Stage3-200k、Val Seen/Unseen
   各 64 场、`world_size=16`、`top-k=5`。
 - 日志：`work_dirs/eval_logs/stage3_200k_coordination_top5_*.log`。
