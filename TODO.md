@@ -83,18 +83,44 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 
 根因证据：训练轨迹专家动作本身约有 `44.55%` 重复；当前 CE 会继续模仿这些重复。
 在 4 个真实训练样本上，图头仅改变约 `0.20%` 的 top-1 动作，soft collision 从
-`0.069053` 降到 `0.068995`，硬重复率只从 `39.04%` 降到 `38.97%`。下一轮必须让
-训练目标直接约束最终联合分配，而不是继续增大当前 soft collision 权重。
+`0.069053` 降到 `0.068995`，硬重复率只从 `39.04%` 降到 `38.97%`。
+
+## P0.1：无训练全局 owner 分配
+
+- [x] 回到原始 Stage3-200k checkpoint，不加载 P0 图头，不使用专家动作 CE。
+- [x] 使用 Transformer logits 做 Hungarian 全局匹配；每颗卫星最多一个任务、每个
+  任务每步最多一个 owner，其余卫星选择次优任务或空动作。
+- [x] 使用全局 `task_id` 记录上一时刻 owner，并加 `0.25` continuation bonus；任务
+  列表重排后不会把相对编号误认成同一任务。
+- [x] 未接入在线 Basilisk、轨道传播或几何预测；51 星、301 任务的分配耗时约
+  `0.264 ms/step`。
+- [x] 43 项相关测试通过；完成 Val Seen/Unseen 各 2 个同场景筛选。
+- [x] 2+2 未通过指标门槛，因此停止 8+8、完整 Val 和 Test。
+
+2+2 同场景对照：
+
+| Split | 方案 | CR/% | PCR/% | WCR/% | TAT_s | PC_Wh | CS_paper | 重复率 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Val Seen | Stage3 baseline | 35.26 | 39.06 | 35.08 | 575.32 | 68.50 | 4.2858 | 36.41% |
+| Val Seen | P0.1 owner | 28.68 | 33.44 | 26.25 | 503.06 | 58.21 | 4.7318 | 0.00% |
+| Val Unseen | Stage3 baseline | 25.93 | 28.34 | 26.24 | 584.52 | 89.98 | 5.5124 | 28.11% |
+| Val Unseen | P0.1 owner | 23.89 | 26.95 | 23.96 | 596.78 | 81.97 | 5.7513 | 0.00% |
+
+结论：严格一任务一 owner 确实消除了同一步冲突，也降低了功耗，但同时删除了过多
+仍有用的并行选择，导致质量指标和 `CS_paper` 明显变差。下一轮不能继续使用绝对
+唯一约束，应研究只压制低价值重复、允许少量高价值协作的自适应容量；仍不恢复专家
+动作 CE。
 
 ## 后续方向
 
-以下方向暂缓，不与 P0 同时启动：
+下一轮优先方向：
 
-- 图分配头在完整 Val 有效后，再用 PPO 小规模微调 `CS_paper`。
-- 对失败状态做 DAgger 或新一轮专家迭代。
-- 改进 one-hot CE、soft target、focal loss 和 success-weighted imitation。
-- 增强连续观测、课程学习、难度采样和轻量物理相对特征。
-- 若图结构仍暴露可行性问题，再用 hard negatives 重训 TimeModel。
+- 不使用专家动作 CE，先定义“低价值重复”和“必要协作”的可测标签。
+- 将硬容量 1 改为自适应容量 1–2：只有第二颗卫星的模型收益足够高，或需要延续上一
+  时刻 owner 时才允许重复；先做离线回放和 2+2 筛选。
+- 确定约束不会显著损害 CR/PCR/WCR 后，再考虑用 PPO 直接优化 `CS_paper`。
+- 增强连续观测、课程学习和轻量状态特征暂缓；若仍暴露可行性问题，再用 hard
+  negatives 重训 TimeModel。
 
 ## 实验记录要求
 
@@ -124,6 +150,9 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
   `work_dirs/assignment_head_p0_c020_cov010_10k/checkpoints/iter_10000/model.pth`。
 - 8+8 Val 汇总：`work_dirs/eval_summaries/assignment_head_p0_10k_val8.json`。
 - 8+8 协调诊断：`work_dirs/rl_eval_assignment_head_p0_10k_*_8/coordination_diagnostics.json`。
+- P0.1 2+2 汇总：`work_dirs/eval_summaries/owner_assignment_p01_b025_val2.json`。
+- P0.1 2+2 协调诊断：
+  `work_dirs/rl_eval_owner_assignment_p01_b025_val_*_2/coordination_diagnostics.json`。
 - 最近完成：`aeos_stage3_coordination_diag64`，Stage3-200k、Val Seen/Unseen
   各 64 场、`world_size=16`、`top-k=5`。
 - 日志：`work_dirs/eval_logs/stage3_200k_coordination_top5_*.log`。

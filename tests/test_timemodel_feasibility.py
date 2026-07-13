@@ -264,6 +264,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         coordination_diagnostics_top_k=5,
         use_assignment_head=False,
         assignment_head_hidden_width=32,
+        owner_assignment=True,
+        owner_continuation_bonus=0.25,
     )
 
     assert metadata == {
@@ -277,6 +279,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         'coordination_diagnostics_top_k': 5,
         'use_assignment_head': False,
         'assignment_head_hidden_width': 32,
+        'owner_assignment': True,
+        'owner_continuation_bonus': 0.25,
     }
 
 
@@ -301,6 +305,9 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
             '--use-assignment-head',
             '--assignment-head-hidden-width',
             '16',
+            '--owner-assignment',
+            '--owner-continuation-bonus',
+            '0.25',
         ],
     )
 
@@ -313,6 +320,8 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
     assert args.max_scenes == 8
     assert args.use_assignment_head is True
     assert args.assignment_head_hidden_width == 16
+    assert args.owner_assignment is True
+    assert args.owner_continuation_bonus == 0.25
 
 
 def test_limit_annotations_keeps_requested_prefix() -> None:

@@ -29,6 +29,7 @@ from .coordination_diagnostics import (
     summarize_scene_results,
 )
 from .policy import Policy
+from .owner_assignment import resolve_owner_assignments
 from constellation.new_transformers.model import GLOBALS
 
 COMPLETION_RATE_THRESHOLD = 0.01
@@ -77,6 +78,8 @@ class EvalEnvironment(ControllerEnvironment):
         max_scenes: int | None = None,
         gen_trajectory_dir: pathlib.Path | None = None,
         enable_coordination_diagnostics: bool = False,
+        enable_owner_assignment: bool = False,
+        owner_continuation_bonus: float = 0.25,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -89,6 +92,9 @@ class EvalEnvironment(ControllerEnvironment):
         )
         self._coordination_before: dict[str, Any] | None = None
         self._coordination_step: dict[str, Any] | None = None
+        self._enable_owner_assignment = enable_owner_assignment
+        self._owner_continuation_bonus = owner_continuation_bonus
+        self._previous_owner_task_ids: npt.NDArray[np.int64] | None = None
 
         if retry_from is not None:
             df = pd.read_csv(
@@ -119,6 +125,7 @@ class EvalEnvironment(ControllerEnvironment):
         return self._annotations[self._index]
 
     def reset(self, *args, **kwargs) -> tuple[Observation, dict[str, Any]]:
+        self._previous_owner_task_ids = None
         if self._counter != -1 and not self.all_done:
             id_ = self._get_annotation()
             save_dir = self._gen_trajectory_dir / f'{id_ // 1000:02d}'
@@ -146,12 +153,40 @@ class EvalEnvironment(ControllerEnvironment):
         self,
         action: npt.NDArray[np.uint16],
     ) -> tuple[Observation, float, bool, bool, dict[str, Any]]:
-        if isinstance(action, tuple):  # TODO: one action
-            action, pred_mask = action
-            self._pred_mask = pred_mask
-
         if self.all_done:
             return null_observation, 0.0, False, False, dict(all_done=True)
+
+        if isinstance(action, tuple):  # TODO: one action
+            action, auxiliary = action
+            if isinstance(auxiliary, dict):
+                pred_mask = auxiliary.get('pred_mask')
+                if pred_mask is not None:
+                    self._pred_mask = pred_mask
+                owner_logits = auxiliary.get('owner_logits')
+                if owner_logits is not None:
+                    if not self._enable_owner_assignment:
+                        raise RuntimeError('owner assignment is not enabled')
+                    controller = self._require_controller()
+                    action, self._previous_owner_task_ids = (
+                        resolve_owner_assignments(
+                            owner_logits,
+                            task_ids=(
+                                controller.task_manager.ongoing_tasks.ids
+                                .tolist()
+                            ),
+                            num_satellites=(
+                                controller.environment.num_satellites
+                            ),
+                            previous_owner_task_ids=(
+                                self._previous_owner_task_ids
+                            ),
+                            continuation_bonus=(
+                                self._owner_continuation_bonus
+                            ),
+                        )
+                    )
+            else:
+                self._pred_mask = auxiliary
 
         if self._enable_coordination_diagnostics:
             controller = self._require_controller()
@@ -269,6 +304,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=32,
     )
+    parser.add_argument('--owner-assignment', action='store_true')
+    parser.add_argument(
+        '--owner-continuation-bonus',
+        type=float,
+        default=0.25,
+    )
     args = parser.parse_args()
     return args
 
@@ -312,6 +353,8 @@ def build_eval_metadata(
     coordination_diagnostics_top_k: int | None,
     use_assignment_head: bool = False,
     assignment_head_hidden_width: int = 32,
+    owner_assignment: bool = False,
+    owner_continuation_bonus: float = 0.25,
 ) -> dict[str, Any]:
     """记录影响评估可复现性的关键参数。"""
     return dict(
@@ -325,6 +368,8 @@ def build_eval_metadata(
         coordination_diagnostics_top_k=coordination_diagnostics_top_k,
         use_assignment_head=use_assignment_head,
         assignment_head_hidden_width=assignment_head_hidden_width,
+        owner_assignment=owner_assignment,
+        owner_continuation_bonus=owner_continuation_bonus,
     )
 
 
@@ -345,6 +390,8 @@ def main() -> None:
         raise ValueError('coordination diagnostics top-k must be positive')
     if args.assignment_head_hidden_width <= 0:
         raise ValueError('assignment head hidden width must be positive')
+    if args.owner_continuation_bonus < 0:
+        raise ValueError('owner continuation bonus must be non-negative')
     config = PyConfig.load(args.config, **args.config_options)
     config.override(args.override)
     init_seed(args.seed)
@@ -368,6 +415,8 @@ def main() -> None:
         ),
         use_assignment_head=args.use_assignment_head,
         assignment_head_hidden_width=args.assignment_head_hidden_width,
+        owner_assignment=args.owner_assignment,
+        owner_continuation_bonus=args.owner_continuation_bonus,
     )
     json_dump(metadata, str(work_dir / 'eval_metadata.json'))
 
@@ -381,6 +430,8 @@ def main() -> None:
         enable_coordination_diagnostics=(
             args.coordination_diagnostics_top_k is not None
         ),
+        enable_owner_assignment=args.owner_assignment,
+        owner_continuation_bonus=args.owner_continuation_bonus,
         **config.environment,
     )
     atexit.register(environment.close)
@@ -426,15 +477,31 @@ def main() -> None:
         if i % config.log_interval == 0:
             todd.logger.info("rank %s step %d", os.environ['RANK'], i)
 
-        if args.coordination_diagnostics_top_k is not None:
+        if (
+            args.coordination_diagnostics_top_k is not None
+            or args.owner_assignment
+        ):
             GLOBALS['capture_actor_logits'] = True
         actions, _ = algorithm.predict(
             observations,
             deterministic=True,  # type: ignore[arg-type]
         )
         actor_logits = GLOBALS.pop('actor_logits', None)
-        if 'pred_mask' in GLOBALS:
-            actions = list(zip(actions, GLOBALS.pop('pred_mask').cpu()))
+        pred_mask = GLOBALS.pop('pred_mask', None)
+        if pred_mask is not None or args.owner_assignment:
+            if args.owner_assignment:
+                assert actor_logits is not None
+            action_payloads: list[dict[str, object]] = []
+            for env_index in range(len(actions)):
+                payload: dict[str, object] = {}
+                if pred_mask is not None:
+                    payload['pred_mask'] = pred_mask[env_index].cpu()
+                if args.owner_assignment:
+                    payload['owner_logits'] = (
+                        actor_logits[env_index].numpy()
+                    )
+                action_payloads.append(payload)
+            actions = list(zip(actions, action_payloads))
         observations, _, dones, infos = environment.step(actions)
 
         if args.coordination_diagnostics_top_k is not None:
