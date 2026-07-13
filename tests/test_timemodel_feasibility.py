@@ -206,6 +206,20 @@ def test_eval_policy_kwargs_include_feasibility_constraints() -> None:
     }
 
 
+def test_eval_policy_kwargs_can_enable_assignment_head() -> None:
+    kwargs = eval_all.build_policy_kwargs(
+        ['assignment.pth'],
+        None,
+        feasibility_penalty_threshold=None,
+        feasibility_penalty_strength=None,
+        use_assignment_head=True,
+        assignment_head_hidden_width=16,
+    )
+
+    assert kwargs['actor_model_kwargs']['use_assignment_head'] is True
+    assert kwargs['actor_model_kwargs']['assignment_head_hidden_width'] == 16
+
+
 def test_policy_uses_actor_model_kwargs_during_actor_construction(
     monkeypatch,
 ) -> None:
@@ -248,6 +262,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         feasibility_penalty_threshold=None,
         feasibility_penalty_strength=None,
         coordination_diagnostics_top_k=5,
+        use_assignment_head=False,
+        assignment_head_hidden_width=32,
     )
 
     assert metadata == {
@@ -259,6 +275,8 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         'feasibility_penalty_threshold': None,
         'feasibility_penalty_strength': None,
         'coordination_diagnostics_top_k': 5,
+        'use_assignment_head': False,
+        'assignment_head_hidden_width': 32,
     }
 
 
@@ -280,6 +298,9 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
             '5',
             '--max-scenes',
             '8',
+            '--use-assignment-head',
+            '--assignment-head-hidden-width',
+            '16',
         ],
     )
 
@@ -290,6 +311,8 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
     assert args.feasibility_penalty_strength == 0.5
     assert args.coordination_diagnostics_top_k == 5
     assert args.max_scenes == 8
+    assert args.use_assignment_head is True
+    assert args.assignment_head_hidden_width == 16
 
 
 def test_limit_annotations_keeps_requested_prefix() -> None:

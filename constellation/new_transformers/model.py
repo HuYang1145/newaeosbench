@@ -23,6 +23,7 @@ from todd.registries import InitWeightsMixin
 from todd.runners.callbacks import TensorBoardCallback
 from constellation import MAX_TIME_STEP
 from torch.distributions import Categorical
+from .assignment import AssignmentAuxiliaryLoss, BipartiteAssignmentHead
 from .constants import SATELLITE_DIM, TASK_DIM
 
 GLOBALS = dict()
@@ -213,7 +214,7 @@ class Decoder(InitWeightsMixin, nn.Module):
         hidden_states: torch.Tensor,
         tasks_mask: torch.Tensor,
         time_mask: torch.Tensor,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         time_embedding = einops.repeat(
             time_embedding,
             'b d -> b ns d',
@@ -272,7 +273,7 @@ class Decoder(InitWeightsMixin, nn.Module):
         logits = torch.einsum('b s d, b t d -> b s t', x, hidden_states)
         logits = logits + logits_mask
 
-        return null_logits, logits
+        return null_logits, logits, x
         # x = self._out_projector(x)
         # return x
 
@@ -299,6 +300,8 @@ class Transformer(nn.Module):
         feasibility_threshold: float | None = None,
         feasibility_penalty_threshold: float | None = None,
         feasibility_penalty_strength: float | None = None,
+        use_assignment_head: bool = False,
+        assignment_head_hidden_width: int = 32,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -346,6 +349,9 @@ class Transformer(nn.Module):
         self._feasibility_threshold = feasibility_threshold
         self._feasibility_penalty_threshold = feasibility_penalty_threshold
         self._feasibility_penalty_strength = feasibility_penalty_strength
+        self._use_assignment_head = use_assignment_head
+        if use_assignment_head and not return_logits:
+            raise ValueError('assignment head requires task logits')
 
         time_embedding = sinusoidal_position_embedding(
             torch.arange(MAX_TIME_STEP),
@@ -378,6 +384,14 @@ class Transformer(nn.Module):
         )
         self._time_model = TimeModel()
         self._time_projection = nn.Linear(1, 1)
+        self._assignment_head = (
+            BipartiteAssignmentHead(
+                satellite_width=decoder_width,
+                task_width=encoder_width,
+                hidden_width=assignment_head_hidden_width,
+            )
+            if use_assignment_head else None
+        )
 
         self._time_model.requires_grad_(use_constraint_module)
         self._encoder.requires_grad_(True)
@@ -453,7 +467,7 @@ class Transformer(nn.Module):
         if not self._return_logits:
             x = outputs
             return x
-        null_logits, logits = outputs
+        null_logits, logits, satellite_features = outputs
 
         logits = apply_feasibility_threshold(
             logits,
@@ -466,6 +480,15 @@ class Transformer(nn.Module):
             threshold=self._feasibility_penalty_threshold,
             strength=self._feasibility_penalty_strength,
         )
+        if self._assignment_head is not None:
+            logits = self._assignment_head(
+                einops.rearrange(null_logits, 'b ns -> b ns 1'),
+                logits,
+                satellite_features,
+                hidden_states,
+                constellation_mask,
+                tasks_mask,
+            )
 
         return null_logits, logits
 
@@ -507,6 +530,9 @@ class Model(nn.Module):
         feasibility_threshold: float | None = None,
         feasibility_penalty_threshold: float | None = None,
         feasibility_penalty_strength: float | None = None,
+        use_assignment_head: bool = False,
+        assignment_head_hidden_width: int = 32,
+        freeze_assignment_backbone: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -526,7 +552,16 @@ class Model(nn.Module):
             feasibility_threshold=feasibility_threshold,
             feasibility_penalty_threshold=feasibility_penalty_threshold,
             feasibility_penalty_strength=feasibility_penalty_strength,
+            use_assignment_head=use_assignment_head,
+            assignment_head_hidden_width=assignment_head_hidden_width,
         )
+        if freeze_assignment_backbone:
+            if self._transformer._assignment_head is None:
+                raise ValueError(
+                    'freezing the backbone requires the assignment head',
+                )
+            self._transformer.requires_grad_(False)
+            self._transformer._assignment_head.requires_grad_(True)
         self._ce_loss = CrossEntropyLoss()
 
     def predict(self, *args, **kwargs) -> torch.Tensor:
@@ -593,6 +628,8 @@ class JointModel(Model):
         feasibility_loss_weight: float = 1.0,
         time_loss_weight: float = 1.0,
         assignment_loss_weight: float = 1.0,
+        collision_loss_weight: float = 0.0,
+        coverage_loss_weight: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -601,6 +638,9 @@ class JointModel(Model):
         self._feasibility_loss_weight = feasibility_loss_weight
         self._time_loss_weight = time_loss_weight
         self._assignment_loss_weight = assignment_loss_weight
+        self._collision_loss_weight = collision_loss_weight
+        self._coverage_loss_weight = coverage_loss_weight
+        self._assignment_auxiliary_loss = AssignmentAuxiliaryLoss()
 
     def forward(
         self,
@@ -634,6 +674,12 @@ class JointModel(Model):
             flat_logits,
             einops.rearrange(batch.actions_task_id + 1, 'b ns -> (b ns)'),
         )
+        assignment_auxiliary = self._assignment_auxiliary_loss(
+            logits,
+            batch.actions_task_id,
+            batch.constellation_mask,
+            batch.tasks_mask,
+        )
 
         pred_durations, pred_masks = self._transformer._time_model._predict(
             batch.constraint_time_steps,
@@ -662,11 +708,16 @@ class JointModel(Model):
             self._feasibility_loss_weight * ls_loss
             + self._time_loss_weight * lt_loss
             + self._assignment_loss_weight * la_loss
+            + self._collision_loss_weight * assignment_auxiliary.collision
+            + self._coverage_loss_weight * assignment_auxiliary.coverage
         )
         memo.update(
             loss=loss,
             pred_masks=pred_masks,
             gt_masks=gt_masks,
+            assignment_loss=la_loss,
+            assignment_collision_loss=assignment_auxiliary.collision,
+            assignment_coverage_loss=assignment_auxiliary.coverage,
         )
 
         tensors: dict[str, torch.Tensor] = dict(
@@ -675,6 +726,8 @@ class JointModel(Model):
             lt_loss=lt_loss,
             la_loss=la_loss,
             ce_loss=la_loss,
+            assignment_collision_loss=assignment_auxiliary.collision,
+            assignment_coverage_loss=assignment_auxiliary.coverage,
         )
         if log is not None:
             log.update({k: f'{v:.3f}' for k, v in tensors.items()})

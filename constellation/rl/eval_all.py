@@ -263,6 +263,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
     )
+    parser.add_argument('--use-assignment-head', action='store_true')
+    parser.add_argument(
+        '--assignment-head-hidden-width',
+        type=int,
+        default=32,
+    )
     args = parser.parse_args()
     return args
 
@@ -273,8 +279,10 @@ def build_policy_kwargs(
     *,
     feasibility_penalty_threshold: float | None,
     feasibility_penalty_strength: float | None,
+    use_assignment_head: bool = False,
+    assignment_head_hidden_width: int = 32,
 ) -> dict[str, Any]:
-    return dict(
+    kwargs = dict(
         load_model_from=load_model_from,
         actor_model_kwargs=dict(
             use_constraint_module=True,
@@ -284,6 +292,12 @@ def build_policy_kwargs(
             feasibility_penalty_strength=feasibility_penalty_strength,
         ),
     )
+    if use_assignment_head:
+        kwargs['actor_model_kwargs'].update(
+            use_assignment_head=True,
+            assignment_head_hidden_width=assignment_head_hidden_width,
+        )
+    return kwargs
 
 
 def build_eval_metadata(
@@ -296,6 +310,8 @@ def build_eval_metadata(
     feasibility_penalty_threshold: float | None,
     feasibility_penalty_strength: float | None,
     coordination_diagnostics_top_k: int | None,
+    use_assignment_head: bool = False,
+    assignment_head_hidden_width: int = 32,
 ) -> dict[str, Any]:
     """记录影响评估可复现性的关键参数。"""
     return dict(
@@ -307,6 +323,8 @@ def build_eval_metadata(
         feasibility_penalty_threshold=feasibility_penalty_threshold,
         feasibility_penalty_strength=feasibility_penalty_strength,
         coordination_diagnostics_top_k=coordination_diagnostics_top_k,
+        use_assignment_head=use_assignment_head,
+        assignment_head_hidden_width=assignment_head_hidden_width,
     )
 
 
@@ -325,6 +343,8 @@ def main() -> None:
         and args.coordination_diagnostics_top_k <= 0
     ):
         raise ValueError('coordination diagnostics top-k must be positive')
+    if args.assignment_head_hidden_width <= 0:
+        raise ValueError('assignment head hidden width must be positive')
     config = PyConfig.load(args.config, **args.config_options)
     config.override(args.override)
     init_seed(args.seed)
@@ -346,6 +366,8 @@ def main() -> None:
         coordination_diagnostics_top_k=(
             args.coordination_diagnostics_top_k
         ),
+        use_assignment_head=args.use_assignment_head,
+        assignment_head_hidden_width=args.assignment_head_hidden_width,
     )
     json_dump(metadata, str(work_dir / 'eval_metadata.json'))
 
@@ -379,6 +401,10 @@ def main() -> None:
                     args.feasibility_penalty_threshold
                 ),
                 feasibility_penalty_strength=args.feasibility_penalty_strength,
+                use_assignment_head=args.use_assignment_head,
+                assignment_head_hidden_width=(
+                    args.assignment_head_hidden_width
+                ),
             ),
             tensorboard_log=str(work_dir),
             seed=args.seed,
