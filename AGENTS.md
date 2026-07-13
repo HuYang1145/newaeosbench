@@ -17,24 +17,25 @@ env PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}" PYTHONPATH=":${PYTHONPATH:-
 ## 项目说明
 
 - 本仓库实现了带 Basilisk 仿真的 AEOS 星座调度方法，以及基于 Transformer 的模型。
-- 关键训练和评估入口记录在 `CLAUDE.md`、`README.md` 和 `TODO.md` 中。
+- 关键训练和评估入口记录在 `README.md` 和 `TODO.md` 中；已完成改进与负结果记录在 `改进日志.md`；论文对齐结论与汇报口径记录在 `docs/实验复现报告.md` 中。
 - 当前复现工作重点是尽量对齐论文 Table 2 和 Table 3 的结果。助手的主要任务是帮助复现论文数据、诊断本地指标与论文指标的差距，并选择更接近论文结果的训练和评估步骤。
 - 当本地结果与论文不同，应优先查明原因，再启动新的无关实验。需要检查评估协议、数据划分、标注池、检查点来源、模型配置、损失定义、滚动生成/筛选规则和指标聚合公式。
 - 默认以论文对齐作为成功标准：每个实验都应记录它对应论文哪一行、哪些指标一致、哪些指标有偏差，以及可能原因。
+- 当前统一目标是降低 `CS_paper`，同时完整报告 `CR/PCR/WCR/TAT_s/PC_Wh`，不能只优化单一完成率。
 - 旧 200k CE-only 模型应保留为历史基线，但它不是严格论文复现模型。
-- 当前可观测性过滤任务集工作中，要清楚区分三层数据：
+- 当前模型改进第一主线是轻量卫星—任务二部图联合分配：保留现有 Transformer 生成候选与特征，使用分配头减少多颗卫星重复争抢同一任务。第一阶段只用现有轨迹监督训练；完整 Val 证明有效后，才考虑 PPO。
+- 可观测性过滤已经退出当前模型改进主线；已有筛选数据、日志和评估摘要只作为历史诊断证据保留。阅读或复用这类历史实验时，要清楚区分三层数据：
   - `constellation` / `satellites` / `orbits` 是卫星物理场景；如果只是修正任务点有效性，通常应复用这些数据。
   - `tasksets` 是生成的地面观测任务；可观测性过滤修改的是这一层。
   - `trajectories.*` 是在特定 `taskset` 上生成的滚动生成轨迹、专家轨迹或控制轨迹。评估已有检查点不需要它们；如果要基于新 `tasksets` 重新训练，则必须重新生成它们。
-- 可观测性过滤应使用快速物理几何检查，而不是完整 Basilisk 滚动生成。当前实现使用轨道传播、地球自转、地球遮挡/偏离星下点角约束、传感器类型匹配，以及任务 `release`/`due` 时间窗内的连续可见窗口。
+- 如果未来重新开展可观测性过滤，应使用快速物理几何检查，而不是完整 Basilisk 滚动生成；几何检查至少应覆盖轨道传播、地球自转、地球遮挡/偏离星下点角约束、传感器类型匹配，以及任务 `release`/`due` 时间窗内的连续可见窗口。
 - taskset 过滤不改变正式模型评估流程：评估仍然运行 `Policy + Controller + BasiliskEnvironment + TaskManager + Evaluators`。`TaskManager` 只是运行时任务状态账本，用于记录 release、ongoing、progress、succeeded、failed 和 closed 状态；它不是任务生成器。
 - 可观测性过滤后的评估输出必须与未过滤输出分开。命名应包含 `observable_filtered`，例如 `work_dirs/rl_eval_*_observable_filtered` 和 `work_dirs/eval_summaries/*_observable_filtered.json`，避免新旧指标混在一起。
 - 论文说明 train/val/test 的划分为：train 有 16,218 条轨迹，val-seen 有 64 个场景，val-unseen 有 64 个场景，test 有 64 个场景。本地指标对比前，应先按这些数量检查评估划分。
 - 论文使用 96 个并行仿真环境进行评估。正式复现验证或评估时，如果资源允许，优先使用 `environment.world_size=96`。命令或日志中必须保留具体并行设置，方便追溯结果。
-- 长时间正式评估应放在 `tmux` 等托管会话中运行，日志放在 `work_dirs/eval_logs/` 下，避免交互式会话关闭后任务中断。当前论文 Stage-3 全模型评估辅助脚本是 `scripts/run_stage3_96core_eval_managed.sh`。
-- 预计运行超过几分钟的任务，尤其是训练、滚动生成、大规模评估或长时间数据处理，默认应放入 `tmux` 等后台托管会话，而不是在前台直接运行。
-- 启动长任务前，优先在 `scripts/` 下创建专用包装脚本，并给会话使用清晰可识别的名称，方便恢复、检查和后续对比。
-- 以托管方式启动长任务后，应在 `TODO.md` 中记录会话名称、命令或脚本、日志路径和预期输出路径。
+- 当前机器属于 Slurm 集群。GPU 训练、正式评估、大规模 Basilisk 仿真和长时间 CPU 任务必须优先通过 `srun` 或 `sbatch` 申请资源，不要直接占用登录节点。
+- 获得计算资源后可以使用 `tmux` 托管长任务。应优先使用 `scripts/` 中与目标 checkpoint、split 和评估协议明确对应的包装脚本。
+- 启动长任务前，应在 `scripts/` 下准备专用包装脚本，并在 `TODO.md` 中记录 Slurm job、tmux 会话（如有）、命令、日志路径、checkpoint 和预期输出目录。
 - 不要依赖交互式编辑器会话一直打开。应假设用户可能随时关闭 VSCode 或断开连接，并据此选择托管/后台运行方式。
 
 ## 安全
@@ -62,6 +63,8 @@ env PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}" PYTHONPATH=":${PYTHONPATH:-
 - AEOS-Former / Transformer / TimeModel 的职责是学习并近似卫星调度中的可行性与决策规律，从而替代昂贵的在线物理预测。不要在模型训练的数据热路径或推理决策循环中为每个卫星—任务候选直接运行 Basilisk、完整轨道传播或重型物理几何预测。
 - Basilisk 只用于离线生成监督信号、轨迹与 hard negatives，以及最终正式评估和物理一致性验证；它不应成为每个 Transformer forward 或每个推理时间步的前置求解器。
 - TimeModel 可行性校准应使用已有离线轨迹中的 `is_visible`、动作和状态标签。正式推理只消费神经网络已经输出的 feasibility score，并通过轻量阈值或掩码约束任务 logits。
+- 二部图分配头只能消费现有 Encoder/Decoder 特征、模型分数、任务状态和离线标签，不得把 Basilisk 或完整几何预测器接入图边构造的在线热路径。
+- 联合分配实验必须同时报告重复冗余率、合理接力率、top-k 覆盖率、推理耗时和正式 `CR/PCR/WCR/TAT_s/PC_Wh/CS_paper`；不能只证明重复率下降。
 - 若后续需要加入连续可见窗口、预计开始时间、姿态机动时间等物理信息，应优先离线预计算为监督标签或静态训练特征，或从当前已提供的轻量状态直接计算；不得在训练 batch 构造或在线推理时调用完整 Basilisk 仿真。
 - 任何可能明显增加训练或推理耗时的物理特征方案，都必须先单独做耗时基准，并证明没有把“用模型替代物理预测”的任务重新退化为在线仿真。
 
