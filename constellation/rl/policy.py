@@ -4,6 +4,7 @@ import einops
 import todd
 import torch
 from constellation.new_transformers import Model as ActorModel
+from constellation.new_transformers.model import GLOBALS
 from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -188,6 +189,8 @@ class Policy(ActorCriticPolicy):
         self,
         latent_pi: torch.Tensor,
     ) -> Distribution:
+        if GLOBALS.get('capture_actor_logits', False):
+            GLOBALS['actor_logits'] = latent_pi.detach().cpu()
         self.action_dist.distribution = [
             Categorical(logits=logits) for logits in latent_pi.unbind(1)
         ]

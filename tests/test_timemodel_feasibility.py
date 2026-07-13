@@ -247,6 +247,7 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         feasibility_threshold=0.25,
         feasibility_penalty_threshold=None,
         feasibility_penalty_strength=None,
+        coordination_diagnostics_top_k=5,
     )
 
     assert metadata == {
@@ -257,6 +258,7 @@ def test_eval_metadata_records_feasibility_threshold() -> None:
         'feasibility_threshold': 0.25,
         'feasibility_penalty_threshold': None,
         'feasibility_penalty_strength': None,
+        'coordination_diagnostics_top_k': 5,
     }
 
 
@@ -274,6 +276,8 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
             '0.03',
             '--feasibility-penalty-strength',
             '0.5',
+            '--coordination-diagnostics-top-k',
+            '5',
             '--max-scenes',
             '8',
         ],
@@ -284,6 +288,7 @@ def test_eval_cli_parses_feasibility_threshold(monkeypatch) -> None:
     assert args.feasibility_threshold == 0.25
     assert args.feasibility_penalty_threshold == 0.03
     assert args.feasibility_penalty_strength == 0.5
+    assert args.coordination_diagnostics_top_k == 5
     assert args.max_scenes == 8
 
 

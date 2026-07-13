@@ -268,6 +268,7 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         # print("task_ids:", task_ids)
 
         self._take_actions(task_ids)
+        self._after_policy_action(action)
 
         self._last_num_succeeded_tasks = _controller.task_manager.num_succeeded_tasks
 
@@ -287,6 +288,13 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
             truncated,
             self.info,
         )
+
+    def _after_policy_action(
+        self,
+        action: npt.NDArray[np.int32],
+    ) -> None:
+        """供评估诊断在跳过空闲时段前读取动作结果。"""
+        del action
 
     def _take_actions(self, task_ids: npt.NDArray[np.int32]) -> None:
         _controller = self._require_controller()

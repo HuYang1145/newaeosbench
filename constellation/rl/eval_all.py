@@ -22,6 +22,12 @@ from todd.utils import init_seed
 
 from .environment import Environment, Observation, null_observation
 from .controller_environment import ControllerEnvironment
+from .coordination_diagnostics import (
+    SceneRecorder,
+    build_step_diagnostics,
+    map_topk_task_ids,
+    summarize_scene_results,
+)
 from .policy import Policy
 from constellation.new_transformers.model import GLOBALS
 
@@ -70,6 +76,7 @@ class EvalEnvironment(ControllerEnvironment):
         retry_from: pathlib.Path | None = None,
         max_scenes: int | None = None,
         gen_trajectory_dir: pathlib.Path | None = None,
+        enable_coordination_diagnostics: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -77,6 +84,11 @@ class EvalEnvironment(ControllerEnvironment):
         self._rank = rank
         self._counter = -1
         self._gen_trajectory_dir = gen_trajectory_dir
+        self._enable_coordination_diagnostics = (
+            enable_coordination_diagnostics
+        )
+        self._coordination_before: dict[str, Any] | None = None
+        self._coordination_step: dict[str, Any] | None = None
 
         if retry_from is not None:
             df = pd.read_csv(
@@ -141,6 +153,17 @@ class EvalEnvironment(ControllerEnvironment):
         if self.all_done:
             return null_observation, 0.0, False, False, dict(all_done=True)
 
+        if self._enable_coordination_diagnostics:
+            controller = self._require_controller()
+            self._coordination_before = dict(
+                time_step=controller.environment.timer.time,
+                ongoing_task_ids=(
+                    controller.task_manager.ongoing_tasks.ids.tolist()
+                ),
+                all_task_ids=controller.task_manager.taskset.ids.tolist(),
+                progress_before=controller.task_manager.progress.clone(),
+            )
+
         if self._controller.task_manager.progress.any(
         ) and self._controller.environment.timer.time % 50 == 0 and self._controller.environment.timer.time <= 1800:
             todd.logger.info(
@@ -164,8 +187,50 @@ class EvalEnvironment(ControllerEnvironment):
 
         id_ = self._get_annotation()
         info.update(id=id_)
+        if self._enable_coordination_diagnostics:
+            assert self._coordination_step is not None
+            step_diagnostics = self._coordination_step
+            if terminated or truncated:
+                controller = self._require_controller()
+                all_task_ids = set(
+                    controller.task_manager.taskset.ids.tolist(),
+                )
+                succeeded_task_ids = set(
+                    controller.task_manager.succeeded_tasks.ids.tolist(),
+                )
+                failed_task_ids = set(
+                    controller.task_manager.failed_tasks.ids.tolist(),
+                )
+                step_diagnostics.update(
+                    succeeded_task_ids=sorted(succeeded_task_ids),
+                    failed_task_ids=sorted(failed_task_ids),
+                    open_task_ids=sorted(
+                        all_task_ids - succeeded_task_ids - failed_task_ids,
+                    ),
+                )
+            info['coordination_diagnostics'] = step_diagnostics
+            self._coordination_before = None
+            self._coordination_step = None
 
         return observation, reward, terminated, truncated, info
+
+    def _after_policy_action(
+        self,
+        action: npt.NDArray[np.int32],
+    ) -> None:
+        if not self._enable_coordination_diagnostics:
+            return
+        assert self._coordination_before is not None
+        controller = self._require_controller()
+        self._coordination_step = build_step_diagnostics(
+            time_step=self._coordination_before['time_step'],
+            action=action[:controller.environment.num_satellites].tolist(),
+            ongoing_task_ids=self._coordination_before['ongoing_task_ids'],
+            all_task_ids=self._coordination_before['all_task_ids'],
+            progress_before=self._coordination_before['progress_before'],
+            progress_after=controller.task_manager.progress,
+            is_visible=controller.memo['is_visible'],
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -191,6 +256,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--feasibility-penalty-strength',
         type=float,
+        default=None,
+    )
+    parser.add_argument(
+        '--coordination-diagnostics-top-k',
+        type=int,
         default=None,
     )
     args = parser.parse_args()
@@ -225,6 +295,7 @@ def build_eval_metadata(
     feasibility_threshold: float | None,
     feasibility_penalty_threshold: float | None,
     feasibility_penalty_strength: float | None,
+    coordination_diagnostics_top_k: int | None,
 ) -> dict[str, Any]:
     """记录影响评估可复现性的关键参数。"""
     return dict(
@@ -235,6 +306,7 @@ def build_eval_metadata(
         feasibility_threshold=feasibility_threshold,
         feasibility_penalty_threshold=feasibility_penalty_threshold,
         feasibility_penalty_strength=feasibility_penalty_strength,
+        coordination_diagnostics_top_k=coordination_diagnostics_top_k,
     )
 
 
@@ -248,6 +320,11 @@ CUDA_VISIBLE_DEVICES=0,3,4,5,6,7 auto_torchrun -m rl.eval_all \
 
 def main() -> None:
     args = parse_args()
+    if (
+        args.coordination_diagnostics_top_k is not None
+        and args.coordination_diagnostics_top_k <= 0
+    ):
+        raise ValueError('coordination diagnostics top-k must be positive')
     config = PyConfig.load(args.config, **args.config_options)
     config.override(args.override)
     init_seed(args.seed)
@@ -266,6 +343,9 @@ def main() -> None:
         feasibility_threshold=args.feasibility_threshold,
         feasibility_penalty_threshold=args.feasibility_penalty_threshold,
         feasibility_penalty_strength=args.feasibility_penalty_strength,
+        coordination_diagnostics_top_k=(
+            args.coordination_diagnostics_top_k
+        ),
     )
     json_dump(metadata, str(work_dir / 'eval_metadata.json'))
 
@@ -276,6 +356,9 @@ def main() -> None:
         retry_from=args.retry_from,
         max_scenes=args.max_scenes,
         gen_trajectory_dir=gen_trajectory_dir,
+        enable_coordination_diagnostics=(
+            args.coordination_diagnostics_top_k is not None
+        ),
         **config.environment,
     )
     atexit.register(environment.close)
@@ -311,17 +394,69 @@ def main() -> None:
         )
 
     observations = environment.reset()
+    scene_recorders: dict[int, SceneRecorder] = {}
+    scene_results: list[dict[str, object]] = []
     for i in count():
         if i % config.log_interval == 0:
             todd.logger.info("rank %s step %d", os.environ['RANK'], i)
 
+        if args.coordination_diagnostics_top_k is not None:
+            GLOBALS['capture_actor_logits'] = True
         actions, _ = algorithm.predict(
             observations,
             deterministic=True,  # type: ignore[arg-type]
         )
+        actor_logits = GLOBALS.pop('actor_logits', None)
         if 'pred_mask' in GLOBALS:
             actions = list(zip(actions, GLOBALS.pop('pred_mask').cpu()))
         observations, _, dones, infos = environment.step(actions)
+
+        if args.coordination_diagnostics_top_k is not None:
+            assert actor_logits is not None
+            for env_index, (done, info) in enumerate(zip(dones, infos)):
+                step_diagnostics = info.get('coordination_diagnostics')
+                if step_diagnostics is None:
+                    continue
+                scene_id = int(info['id'])
+                recorder = scene_recorders.setdefault(
+                    scene_id,
+                    SceneRecorder(
+                        scene_id=scene_id,
+                        top_k=args.coordination_diagnostics_top_k,
+                    ),
+                )
+                topk_task_ids = map_topk_task_ids(
+                    actor_logits[env_index:env_index + 1],
+                    ongoing_task_ids=[
+                        step_diagnostics['ongoing_task_ids']
+                    ],
+                    num_satellites=[
+                        len(step_diagnostics['assignment'])
+                    ],
+                    top_k=args.coordination_diagnostics_top_k,
+                )[0]
+                recorder.record_step(
+                    time_step=step_diagnostics['time_step'],
+                    assignment=step_diagnostics['assignment'],
+                    topk_task_ids=topk_task_ids,
+                    selected_visible=step_diagnostics['selected_visible'],
+                    progress_made_task_ids=(
+                        step_diagnostics['progress_made_task_ids']
+                    ),
+                )
+                if done:
+                    scene_results.append(recorder.finalize(
+                        succeeded_task_ids=(
+                            step_diagnostics['succeeded_task_ids']
+                        ),
+                        failed_task_ids=(
+                            step_diagnostics['failed_task_ids']
+                        ),
+                        open_task_ids=(
+                            step_diagnostics['open_task_ids']
+                        ),
+                    ))
+                    del scene_recorders[scene_id]
 
         for done, info in zip(dones, infos):
             if done and not info.get('all_done', False):
@@ -344,6 +479,17 @@ def main() -> None:
                 i,
             )
             break
+    GLOBALS.pop('capture_actor_logits', None)
+    if args.coordination_diagnostics_top_k is not None:
+        json_dump(
+            dict(
+                split=config.environment.split,
+                top_k=args.coordination_diagnostics_top_k,
+                summary=summarize_scene_results(scene_results),
+                scenes=scene_results,
+            ),
+            str(work_dir / 'coordination_diagnostics.json'),
+        )
     environment.close()
 
 
