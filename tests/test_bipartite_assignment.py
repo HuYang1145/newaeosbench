@@ -2,6 +2,7 @@ import importlib
 import importlib.util
 
 import torch
+from todd.configs import PyConfig
 
 from constellation.new_transformers.dataset import JointBatch
 from constellation.new_transformers.model import JointModel, Model
@@ -270,3 +271,13 @@ def test_joint_model_reports_weighted_assignment_auxiliary_losses() -> None:
     assignment = memo['assignment_loss']
     expected = assignment + 0.2 * collision + 0.3 * coverage
     torch.testing.assert_close(memo['loss'], expected)
+
+
+def test_assignment_training_config_can_be_serialized() -> None:
+    config = PyConfig.load(
+        'constellation/new_transformers/config_assignment_head_p0.py',
+    )
+
+    dumped = config.dumps()
+
+    assert 'assignment_head_hidden_width' in dumped

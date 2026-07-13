@@ -1,6 +1,6 @@
 """P0 二部图分配头第一阶段训练配置。"""
 
-from copy import deepcopy
+from copy import deepcopy as _deepcopy
 
 from constellation.new_transformers.config_paper_stage3_200k import (
     trainer as _stage3_trainer,
@@ -24,7 +24,7 @@ model = {
     'coverage_loss_weight': 0.1,
 }
 
-trainer = deepcopy(_stage3_trainer)
+trainer = _deepcopy(_stage3_trainer)
 trainer['model'] = model
 trainer['iters'] = iters
 trainer['callbacks'][1]['lr_scheduler'] = {
@@ -44,5 +44,7 @@ trainer['callbacks'][5]['interval'] = 1_000.0
 trainer['dataset']['constraint_batch_size'] = 16
 trainer['optimizer']['lr'] = 5e-4
 
-validator = deepcopy(_stage3_validator)
+validator = _deepcopy(_stage3_validator)
 validator['model'] = model
+
+del _deepcopy, _stage3_trainer, _stage3_validator
