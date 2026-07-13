@@ -1,5 +1,6 @@
 import torch
 
+from constellation.new_transformers.constants import TIME_SCALE
 from constellation.new_transformers.dataset import JointDataset
 
 
@@ -12,7 +13,9 @@ class _FakeSpans:
         return self._rows[:n]
 
 
-def test_joint_dataset_loads_trajectory_once(monkeypatch) -> None:
+def test_joint_dataset_reuses_trajectory_and_normalizes_duration(
+    monkeypatch,
+) -> None:
     dataset = object.__new__(JointDataset)
     dataset._annotations = {'ids': [1234], 'epochs': [7]}
     dataset._split = 'train'
@@ -63,7 +66,9 @@ def test_joint_dataset_loads_trajectory_once(monkeypatch) -> None:
 
     def fake_parse_time_spans(self, actions, is_visible):
         positives = _FakeSpans(torch.tensor([[0, 2, 0, 0]], dtype=torch.int))
-        negatives = _FakeSpans(torch.tensor([[1, -50, 0, 1]], dtype=torch.int))
+        negatives = _FakeSpans(
+            torch.tensor([[1, -TIME_SCALE, 0, 1]], dtype=torch.int),
+        )
         return positives, negatives
 
     monkeypatch.setattr(torch, 'load', fake_torch_load)
@@ -71,8 +76,13 @@ def test_joint_dataset_loads_trajectory_once(monkeypatch) -> None:
     monkeypatch.setattr(JointDataset, '_load_constellation', fake_load_constellation)
     monkeypatch.setattr(JointDataset, '_parse_time_spans', fake_parse_time_spans)
 
-    _ = dataset[0]
+    batch = dataset[0]
 
     assert len(load_calls) == 1
     assert len(load_tasks_calls) == 1
     assert len(load_constellation_calls) == 1
+
+    torch.testing.assert_close(
+        batch.constraint_durations,
+        torch.tensor([2 / TIME_SCALE, -1.]),
+    )

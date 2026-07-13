@@ -34,18 +34,16 @@ from .dataset import (
     Statistics,
     TrajectoryData,
 )
+from .constants import SATELLITE_DIM, TASK_DIM, TIME_SCALE
 from .registries import (
     ConstellationDatasetRegistry,
     ConstellationModelRegistry,
 )
-from .constants import SATELLITE_DIM, TASK_DIM
 
 import pathlib
 
 # TODO: delete
 TRAJECTORIES_ROOT = pathlib.Path('data/trajectories.tabu.1')
-
-TIME_SCALE = 50
 
 T = TypeVar('T', bound=nn.Module)
 

@@ -48,6 +48,7 @@ from constellation import (
 )
 from constellation.data import Constellation, TaskSet
 
+from .constants import TIME_SCALE
 from .registries import ConstellationDatasetRegistry
 
 
@@ -169,10 +170,10 @@ class TimeSpans(UserList[TimeSpan]):
 
         if with_duration:
             duration = time_span.end_time - time_step
-            if duration > 100:
-                duration = -50
+            if duration > 2 * TIME_SCALE:
+                duration = -TIME_SCALE
         else:
-            duration = -50
+            duration = -TIME_SCALE
 
         return time_step, duration, time_span.satellite_id, time_span.task_id
 
@@ -567,5 +568,5 @@ class JointDataset(Dataset):
                 constraint_time_steps,
                 constraint_task_ids,
             ],
-            constraint_durations=constraint_durations.float(),
+            constraint_durations=constraint_durations.float() / TIME_SCALE,
         )
