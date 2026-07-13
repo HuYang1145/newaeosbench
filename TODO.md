@@ -60,8 +60,8 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] 保留动作 CE，并增加 bounded 重复冲突和专家任务覆盖辅助损失。
 - [x] 使用软损失保留有限重复能力，不做绝对一对一硬约束。
 - [x] 完成 52 项相关测试、真实 forward/backward/step 和 100 次 CPU 延迟基准。
-- [ ] 在 `server-10` 运行 10k iter 第一阶段训练；当前已用 4 张 RTX 4090 启动。
-- [ ] 先评估 Val Seen/Unseen 各 8 场，通过后再跑各 64 场。
+- [x] 在 `server-10` 使用 4 张 RTX 4090 完成 10k iter 第一阶段训练。
+- [x] 完成 Val Seen/Unseen 各 8 场筛选；重复冗余率未达门槛，停止各 64 场验证。
 - [ ] 完整 Val 有稳定收益后，只运行一次 Test；在此之前不使用 Test 调参。
 
 第一轮验收门槛：
@@ -70,6 +70,21 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - Val 小样本 CR/PCR/WCR 任一项下降不超过 0.5 个百分点。
 - `PC_Wh`、`TAT_s` 和 `CS_paper` 不出现明显退化。
 - 新模块不能调用在线 Basilisk、完整轨道传播或重型几何预测。
+
+第一轮 8+8 场结果：
+
+| Split | CR/% | PCR/% | WCR/% | TAT_s | PC_Wh | CS_paper | 重复冗余率 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Val Seen | 41.47 | 45.26 | 41.04 | 505.82 | 110.78 | 4.2032 | 48.81% |
+| Val Unseen | 44.39 | 47.56 | 45.12 | 554.26 | 115.55 | 4.1612 | 52.34% |
+
+结论：相对同场景 Stage3-200k baseline，完成率小幅提高，`CS_paper` 基本持平；
+但重复冗余率没有下降到目标值 `35.34%`，核心目标失败，因此不运行完整 Val。
+
+根因证据：训练轨迹专家动作本身约有 `44.55%` 重复；当前 CE 会继续模仿这些重复。
+在 4 个真实训练样本上，图头仅改变约 `0.20%` 的 top-1 动作，soft collision 从
+`0.069053` 降到 `0.068995`，硬重复率只从 `39.04%` 降到 `38.97%`。下一轮必须让
+训练目标直接约束最终联合分配，而不是继续增大当前 soft collision 权重。
 
 ## 后续方向
 
@@ -102,15 +117,13 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 当前有 1 个正在运行的托管任务。
-- P0 第一阶段训练正在 `server-10` 直接运行，不经过 Slurm。服务器为用户自行使用，
-  `groupA/groupB` 权限不影响本机实验。
-- tmux：`aeos_assign_p0`；4 张 RTX 4090；目标 `10,000 iter`。
-- 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；目标 checkpoint：
+- 当前没有正在运行的训练或评估任务。
+- P0 第一阶段训练已在 `server-10` 直接完成，不经过 Slurm；`groupA/groupB` 权限
+  不影响本机实验。
+- 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；最终 checkpoint：
   `work_dirs/assignment_head_p0_c020_cov010_10k/checkpoints/iter_10000/model.pth`。
-- 2026-07-13 03:54 EDT 已运行到 `Iter 100/10000`，当时 ETA 约 1 小时 15 分钟。
-- 训练完成后运行 `scripts/eval_assignment_head_p0_8_slurm.sh` 中的 8+8 Val 命令；
-  在 `server-10` 上直接以普通 Bash 脚本启动即可，`#SBATCH` 行仅作为注释。
+- 8+8 Val 汇总：`work_dirs/eval_summaries/assignment_head_p0_10k_val8.json`。
+- 8+8 协调诊断：`work_dirs/rl_eval_assignment_head_p0_10k_*_8/coordination_diagnostics.json`。
 - 最近完成：`aeos_stage3_coordination_diag64`，Stage3-200k、Val Seen/Unseen
   各 64 场、`world_size=16`、`top-k=5`。
 - 日志：`work_dirs/eval_logs/stage3_200k_coordination_top5_*.log`。
