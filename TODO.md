@@ -53,13 +53,14 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 目标：保留现有 Transformer 的候选表示能力，在其后增加轻量
 `bipartite graph assignment head`，减少多颗卫星同时争抢同一任务。
 
-- [ ] 从当前稳定提交创建 `codex/bipartite-assignment-head` 分支。
-- [ ] 复用 Encoder 任务特征、Decoder 卫星特征和现有 logits，定义卫星—任务边。
-- [ ] 使用残差式分配头，使旧 checkpoint 在关闭新模块时能够恢复原 baseline。
-- [ ] 第一阶段冻结或低学习率微调 Transformer，只用现有轨迹监督训练分配头。
-- [ ] 保留原动作损失，并增加重复冲突和候选覆盖辅助损失。
-- [ ] 对连续观测和跨卫星接力样本允许有限重复，不做绝对一对一硬约束。
-- [ ] 增加单元测试、真实 forward/backward/step smoke test 和推理耗时基准。
+- [x] 从稳定提交 `25718c8` 创建 `codex/bipartite-assignment-head` 分支。
+- [x] 复用 Encoder 任务特征、Decoder 卫星特征和现有 logits，定义卫星—任务边。
+- [x] 使用残差式分配头；关闭模块时不增加参数，开启后的零初始化也精确复现 baseline。
+- [x] 配置第一阶段训练：冻结原模型，只用现有轨迹监督训练 35,105 个图头参数。
+- [x] 保留动作 CE，并增加 bounded 重复冲突和专家任务覆盖辅助损失。
+- [x] 使用软损失保留有限重复能力，不做绝对一对一硬约束。
+- [x] 完成 51 项相关测试、真实 forward/backward/step 和 100 次 CPU 延迟基准。
+- [ ] 在 Slurm 运行 10k iter 第一阶段训练；当前账号尚无 `groupA/groupB` Unix 组权限。
 - [ ] 先评估 Val Seen/Unseen 各 8 场，通过后再跑各 64 场。
 - [ ] 完整 Val 有稳定收益后，只运行一次 Test；在此之前不使用 Test 调参。
 
@@ -102,6 +103,11 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 ## 当前托管任务
 
 - 当前没有正在运行的托管任务。
+- P0 训练脚本已经通过语法与配置检查，但 `sbatch --test-only` 返回
+  `User's group not permitted to use this partition`。用户 `hy` 当前只属于 Unix 组
+  `hy`，需要加入 `groupA` 或 `groupB` 后才能提交。
+- 待提交脚本：`scripts/train_assignment_head_p0_slurm.sh`；训练完成后提交
+  `scripts/eval_assignment_head_p0_8_slurm.sh`。
 - 最近完成：`aeos_stage3_coordination_diag64`，Stage3-200k、Val Seen/Unseen
   各 64 场、`world_size=16`、`top-k=5`。
 - 日志：`work_dirs/eval_logs/stage3_200k_coordination_top5_*.log`。
