@@ -225,7 +225,12 @@ Test      CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 当前没有正在运行的托管任务。
+- 正在运行：`aeos_stage3_coordination_diag64`。使用 Stage3-200k checkpoint
+  `work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`，执行
+  `scripts/run_stage3_200k_coordination_diagnostics_managed.sh`，Val Seen / Unseen
+  各 64 场、`world_size=16`、`top-k=5`。日志写入
+  `work_dirs/eval_logs/stage3_200k_coordination_top5_*.log`，诊断结果写入
+  `work_dirs/rl_eval_stage3_200k_coordination_top5_*/coordination_diagnostics.json`。
 - 最近完成：`aeos_timemodel_soft_full_val`，Stage3-200k、`threshold=0.03`、
   `strength=1.0`，Val Seen / Unseen 各 64 场、`world_size=64`。结果未稳定改善，
   soft penalty 方向停止。
