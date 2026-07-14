@@ -138,8 +138,12 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] 已对 16 场做严格 4-fold scene 验证。`hidden=64, epochs=200` 的平均
   pairwise accuracy 由 baseline `0.6250` 提高到 `0.6771`，增益 `+0.0521`；
   但只有 `2/4` fold 通过门槛。小网络/少轮数扫描更差，Actor 继续冻结。
-- [ ] 若继续该方向，优先把场景数扩大到 64，仍保持每场 4 个候选；
-  目标是提高跨场景稳定性，而不是继续在 16 场上调 Critic 参数。
+- [ ] 64 场扩展实验正在运行，仍保持每场 `1 greedy + 3 seeded top-k`：
+  `LIMIT=64 SCENE_WORKERS=4 NUM_THREADS=6 OUTPUT_ROOT=work_dirs/same_scene_candidates_stage3_200k_64 bash scripts/run_same_scene_candidate_smoke.sh`。
+  使用 Stage3-200k `iter_200000/model.pth`，tmux 为 `aeos-same-scene-64`，
+  单 rank 日志位于输出目录的 `logs/`。已有前 16 场通过硬链接复用，只补跑剩余
+  48 场；生成成功后 `aeos-critic-64` 将自动执行 `hidden=64, epochs=200` 的严格
+  4-fold Critic，输出到 `work_dirs/same_scene_preference_critic_64/`。
 - [ ] 同场景偏好 Critic 通过后，才使用 Advantage 加权训练小型 adapter，并仅运行
   Val Seen/Unseen 各 2 场 Basilisk 验真；此前不扩大 Val、不运行 Test、不进入 PPO。
 
