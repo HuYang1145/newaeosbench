@@ -41,6 +41,19 @@ def test_extract_time_model_state_dict_removes_model_prefix() -> None:
     assert extracted['_mlp.0.weight'].item() == 1
 
 
+def test_duration_regression_metrics_ignore_negative_pairs() -> None:
+    metrics = calibration.duration_regression_metrics(
+        torch.tensor([1.0, 0.5, 99.0]),
+        torch.tensor([50, 50, -50]),
+    )
+
+    assert metrics == {
+        'duration_sample_count': 2,
+        'duration_mae_s': 12.5,
+        'duration_mse_normalized': 0.125,
+    }
+
+
 def test_calibration_cli_parses_explicit_scope(monkeypatch) -> None:
     parse_args = getattr(calibration, 'parse_args', None)
     assert callable(parse_args)

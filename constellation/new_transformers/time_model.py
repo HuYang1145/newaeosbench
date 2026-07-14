@@ -417,6 +417,11 @@ class TimeModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 2),
         )
+        # 兼容旧 checkpoint：原双输出层保持不变，新增的 duration head
+        # 以零残差开始，因此加载 Stage3 后的初始预测与旧模型完全一致。
+        self._duration_head = nn.Linear(hidden_dim, 1)
+        nn.init.zeros_(self._duration_head.weight)
+        nn.init.zeros_(self._duration_head.bias)
         self._mse_loss = MSELoss()
         self._bce_loss = BCEWithLogitsLoss()
 
@@ -429,8 +434,12 @@ class TimeModel(nn.Module):
         time_embedding = self._time_embedding[time_steps]
 
         data = torch.cat([constellation_data, tasks_data, time_embedding], -1)
-        x: torch.Tensor = self._mlp(data)
-        pred_time, pred_mask = x.unbind(-1)
+        hidden = data
+        for layer in list(self._mlp.children())[:-1]:
+            hidden = layer(hidden)
+        legacy_outputs: torch.Tensor = self._mlp[-1](hidden)
+        legacy_time, pred_mask = legacy_outputs.unbind(-1)
+        pred_time = legacy_time + self._duration_head(hidden).squeeze(-1)
         return pred_time, pred_mask
 
     def predict(

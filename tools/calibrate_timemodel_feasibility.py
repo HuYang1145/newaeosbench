@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from constellation.new_transformers.dataset import JointDataset, TimeSpans
+from constellation.new_transformers.constants import TIME_SCALE
 from constellation.new_transformers.feasibility import (
     binary_calibration_metrics,
     hard_negative_indices,
@@ -48,6 +49,29 @@ def extract_time_model_state_dict(
         key.removeprefix(TIME_MODEL_PREFIX): value
         for key, value in state_dict.items()
         if key.startswith(TIME_MODEL_PREFIX)
+    }
+
+
+def duration_regression_metrics(
+    predicted_normalized: torch.Tensor,
+    target_seconds: torch.Tensor,
+) -> dict[str, int | float]:
+    """计算正样本持续时间的秒级 MAE 和训练尺度 MSE。"""
+    positive = target_seconds >= 0
+    if not positive.any():
+        return {
+            'duration_sample_count': 0,
+            'duration_mae_s': 0.0,
+            'duration_mse_normalized': 0.0,
+        }
+    errors = (
+        predicted_normalized[positive]
+        - target_seconds[positive].float() / TIME_SCALE
+    )
+    return {
+        'duration_sample_count': int(positive.sum().item()),
+        'duration_mae_s': float((errors.abs() * TIME_SCALE).mean().item()),
+        'duration_mse_normalized': float(errors.square().mean().item()),
     }
 
 
@@ -153,13 +177,15 @@ def predict_scene(
     *,
     batch_size: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     probabilities: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
+    predicted_durations: list[torch.Tensor] = []
+    target_durations: list[torch.Tensor] = []
     for chunk in rows.split(batch_size):
         time_steps, durations, satellite_ids, task_ids = chunk.unbind(-1)
         with torch.inference_mode():
-            _, feasibility_logits = model._predict(  # pylint: disable=protected-access
+            predicted_duration, feasibility_logits = model._predict(  # pylint: disable=protected-access
                 time_steps.to(device),
                 constellation_data[
                     time_steps,
@@ -169,10 +195,22 @@ def predict_scene(
             )
         probabilities.append(feasibility_logits.sigmoid().cpu())
         targets.append((durations >= 0).cpu())
+        predicted_durations.append(predicted_duration.cpu())
+        target_durations.append(durations.cpu())
 
     if not probabilities:
-        return torch.empty(0), torch.empty(0, dtype=torch.bool)
-    return torch.cat(probabilities), torch.cat(targets)
+        return (
+            torch.empty(0),
+            torch.empty(0, dtype=torch.bool),
+            torch.empty(0),
+            torch.empty(0, dtype=torch.long),
+        )
+    return (
+        torch.cat(probabilities),
+        torch.cat(targets),
+        torch.cat(predicted_durations),
+        torch.cat(target_durations),
+    )
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -209,6 +247,8 @@ def main() -> None:
 
     all_probabilities: list[torch.Tensor] = []
     all_targets: list[torch.Tensor] = []
+    all_predicted_durations: list[torch.Tensor] = []
+    all_target_durations: list[torch.Tensor] = []
     scene_summaries: list[dict[str, int]] = []
     hard_negatives: list[dict[str, int | float | str]] = []
     hard_negative_count = 0
@@ -222,7 +262,12 @@ def main() -> None:
             tasks_data,
             rows,
         ) = load_scene_context(dataset, index)
-        probabilities, targets = predict_scene(
+        (
+            probabilities,
+            targets,
+            predicted_durations,
+            target_durations,
+        ) = predict_scene(
             model,
             constellation_data,
             tasks_data,
@@ -234,6 +279,8 @@ def main() -> None:
             continue
         all_probabilities.append(probabilities)
         all_targets.append(targets)
+        all_predicted_durations.append(predicted_durations)
+        all_target_durations.append(target_durations)
         scene_summaries.append(dict(
             id=id_,
             epoch=epoch,
@@ -263,6 +310,10 @@ def main() -> None:
         raise ValueError('calibration scope produced no real satellite-task pairs')
     probabilities = torch.cat(all_probabilities)
     targets = torch.cat(all_targets)
+    duration_metrics = duration_regression_metrics(
+        torch.cat(all_predicted_durations),
+        torch.cat(all_target_durations),
+    )
     threshold_metrics = [
         binary_calibration_metrics(
             probabilities,
@@ -280,6 +331,7 @@ def main() -> None:
         scene_count=len(scene_summaries),
         sample_count=probabilities.numel(),
         label_semantics='selected_action_continuous_visibility',
+        **duration_metrics,
         thresholds=threshold_metrics,
         hard_negative_threshold=args.hard_negative_threshold,
         hard_negative_count=hard_negative_count,

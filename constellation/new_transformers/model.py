@@ -24,7 +24,7 @@ from todd.runners.callbacks import TensorBoardCallback
 from constellation import MAX_TIME_STEP
 from torch.distributions import Categorical
 from .assignment import AssignmentAuxiliaryLoss, BipartiteAssignmentHead
-from .constants import SATELLITE_DIM, TASK_DIM
+from .constants import SATELLITE_DIM, TASK_DIM, TIME_SCALE
 
 GLOBALS = dict()
 
@@ -630,9 +630,24 @@ class JointModel(Model):
         assignment_loss_weight: float = 1.0,
         collision_loss_weight: float = 0.0,
         coverage_loss_weight: float = 0.0,
+        train_duration_head_only: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if train_duration_head_only and any((
+            assignment_loss_weight,
+            collision_loss_weight,
+            coverage_loss_weight,
+        )):
+            raise ValueError(
+                'duration-head-only training requires all action loss weights '
+                'to be zero',
+            )
+        if train_duration_head_only and feasibility_loss_weight:
+            raise ValueError(
+                'duration-head-only training requires feasibility loss '
+                'weight to be zero',
+            )
         self._bce_loss = BCEWithLogitsLoss()
         self._mse_loss = MSELoss()
         self._feasibility_loss_weight = feasibility_loss_weight
@@ -640,7 +655,37 @@ class JointModel(Model):
         self._assignment_loss_weight = assignment_loss_weight
         self._collision_loss_weight = collision_loss_weight
         self._coverage_loss_weight = coverage_loss_weight
+        self._train_duration_head_only = train_duration_head_only
         self._assignment_auxiliary_loss = AssignmentAuxiliaryLoss()
+        if train_duration_head_only:
+            self.requires_grad_(False)
+            self._transformer._time_model._duration_head.requires_grad_(True)
+            self.register_load_state_dict_post_hook(
+                self._initialize_duration_head_from_legacy_checkpoint,
+            )
+
+    def _initialize_duration_head_from_legacy_checkpoint(
+        self,
+        module: nn.Module,
+        incompatible_keys: Any,
+    ) -> None:
+        del module
+        prefix = '_transformer._time_model._duration_head.'
+        required_missing = {f'{prefix}weight', f'{prefix}bias'}
+        if not required_missing.issubset(incompatible_keys.missing_keys):
+            return
+
+        time_model = self._transformer._time_model
+        legacy_head = time_model._mlp[-1]
+        with torch.no_grad():
+            # 旧 checkpoint 的 duration 数值尺度错误。先用残差精确抵消旧输出，
+            # 再仅训练独立 head 学习修正后的归一化持续时间。
+            time_model._duration_head.weight.copy_(
+                -legacy_head.weight[0:1],
+            )
+            time_model._duration_head.bias.copy_(
+                -legacy_head.bias[0:1],
+            )
 
     def forward(
         self,
@@ -652,34 +697,38 @@ class JointModel(Model):
         tensorboard: TensorBoardCallback | None = memo.get('tensorboard')
 
         batch = JointBatch(*batch)  # for PrefetchDataLoader
-        memo['actions_task_id'] = einops.rearrange(
-            batch.actions_task_id + 1,
-            'b ns -> (b ns)',
-        )
+        if not self._train_duration_head_only:
+            memo['actions_task_id'] = einops.rearrange(
+                batch.actions_task_id + 1,
+                'b ns -> (b ns)',
+            )
 
-        logits = self.predict(
-            batch.time_steps,
-            batch.constellation_sensor_type,
-            batch.constellation_sensor_enabled,
-            batch.constellation_data,
-            batch.constellation_mask,
-            batch.tasks_sensor_type,
-            batch.tasks_data,
-            batch.tasks_mask,
-        )
-        flat_logits = einops.rearrange(logits, 'b ns nt -> (b ns) nt')
-        memo['logits'] = flat_logits
+            logits = self.predict(
+                batch.time_steps,
+                batch.constellation_sensor_type,
+                batch.constellation_sensor_enabled,
+                batch.constellation_data,
+                batch.constellation_mask,
+                batch.tasks_sensor_type,
+                batch.tasks_data,
+                batch.tasks_mask,
+            )
+            flat_logits = einops.rearrange(logits, 'b ns nt -> (b ns) nt')
+            memo['logits'] = flat_logits
 
-        la_loss = self._ce_loss(
-            flat_logits,
-            einops.rearrange(batch.actions_task_id + 1, 'b ns -> (b ns)'),
-        )
-        assignment_auxiliary = self._assignment_auxiliary_loss(
-            logits,
-            batch.actions_task_id,
-            batch.constellation_mask,
-            batch.tasks_mask,
-        )
+            la_loss = self._ce_loss(
+                flat_logits,
+                einops.rearrange(
+                    batch.actions_task_id + 1,
+                    'b ns -> (b ns)',
+                ),
+            )
+            assignment_auxiliary = self._assignment_auxiliary_loss(
+                logits,
+                batch.actions_task_id,
+                batch.constellation_mask,
+                batch.tasks_mask,
+            )
 
         pred_durations, pred_masks = self._transformer._time_model._predict(
             batch.constraint_time_steps,
@@ -692,8 +741,13 @@ class JointModel(Model):
                 pred_durations[gt_masks],
                 batch.constraint_durations[gt_masks].float(),
             )
+            duration_mae_s = (
+                pred_durations[gt_masks]
+                - batch.constraint_durations[gt_masks].float()
+            ).abs().mean() * TIME_SCALE
         else:
             lt_loss = pred_durations.new_zeros(())
+            duration_mae_s = pred_durations.new_zeros(())
 
         ls_loss = self._bce_loss(
             pred_masks,
@@ -704,30 +758,41 @@ class JointModel(Model):
                 1.,
             ),
         )
+        if self._train_duration_head_only:
+            la_loss = pred_durations.new_zeros(())
+            assignment_collision_loss = pred_durations.new_zeros(())
+            assignment_coverage_loss = pred_durations.new_zeros(())
+        else:
+            assignment_collision_loss = assignment_auxiliary.collision
+            assignment_coverage_loss = assignment_auxiliary.coverage
         loss = (
             self._feasibility_loss_weight * ls_loss
             + self._time_loss_weight * lt_loss
             + self._assignment_loss_weight * la_loss
-            + self._collision_loss_weight * assignment_auxiliary.collision
-            + self._coverage_loss_weight * assignment_auxiliary.coverage
+            + self._collision_loss_weight * assignment_collision_loss
+            + self._coverage_loss_weight * assignment_coverage_loss
         )
         memo.update(
             loss=loss,
+            ls_loss=ls_loss,
+            lt_loss=lt_loss,
+            duration_mae_s=duration_mae_s,
             pred_masks=pred_masks,
             gt_masks=gt_masks,
             assignment_loss=la_loss,
-            assignment_collision_loss=assignment_auxiliary.collision,
-            assignment_coverage_loss=assignment_auxiliary.coverage,
+            assignment_collision_loss=assignment_collision_loss,
+            assignment_coverage_loss=assignment_coverage_loss,
         )
 
         tensors: dict[str, torch.Tensor] = dict(
             loss=loss,
             ls_loss=ls_loss,
             lt_loss=lt_loss,
+            duration_mae_s=duration_mae_s,
             la_loss=la_loss,
             ce_loss=la_loss,
-            assignment_collision_loss=assignment_auxiliary.collision,
-            assignment_coverage_loss=assignment_auxiliary.coverage,
+            assignment_collision_loss=assignment_collision_loss,
+            assignment_coverage_loss=assignment_coverage_loss,
         )
         if log is not None:
             log.update({k: f'{v:.3f}' for k, v in tensors.items()})
