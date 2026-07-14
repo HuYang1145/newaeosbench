@@ -5,11 +5,13 @@ import torch
 
 from constellation.new_transformers.offline_critic import (
     ActionConditionedCritic,
+    DenseRewardTargets,
     OfflineDatasetTensors,
     TrajectoryRecord,
     aggregate_by_trajectory,
     audit_candidate_coverage,
     build_transition_tensors,
+    build_dense_reward_targets,
     combine_transition_tensors,
     compute_cs_paper_from_metrics,
     evaluate_ranking,
@@ -78,6 +80,7 @@ def test_build_transition_tensors_preserves_s_a_r_s_prime() -> None:
     assert tensors.next_state.shape == tensors.state.shape
     assert tensors.episode_cost.tolist() == pytest.approx([4.25, 4.25])
     assert tensors.reward.tolist() == pytest.approx([0.0, -4.25])
+    assert tensors.return_to_go.tolist() == pytest.approx([-4.25, -4.25])
     assert tensors.done.tolist() == [False, True]
     assert torch.isfinite(tensors.state).all()
     assert torch.isfinite(tensors.action).all()
@@ -317,6 +320,7 @@ def test_fit_diagnostic_critics_detects_action_signal() -> None:
         next_state=state,
         done=torch.ones(100, dtype=torch.bool),
         episode_cost=cost,
+        return_to_go=-cost,
     )
     train = OfflineDatasetTensors(*(tensor[:80] for tensor in tensors))
     val = OfflineDatasetTensors(*(tensor[80:] for tensor in tensors))
@@ -335,3 +339,127 @@ def test_fit_diagnostic_critics_detects_action_signal() -> None:
     assert summary['all']['critic_spearman'] > 0.9
     assert summary['all']['spearman_gain'] > 0.5
     assert summary['accepted'] is True
+
+
+def test_dense_reward_components_sum_to_negative_cs_paper() -> None:
+    trajectory = {
+        'constellation': {
+            'sensor_enabled': torch.ones(4, 2, dtype=torch.long),
+            'data': torch.zeros(4, 2, 8),
+        },
+        'taskset': {
+            'progress': torch.tensor([
+                [0, 0],
+                [1, 0],
+                [2, 0],
+                [0, 1],
+            ], dtype=torch.uint8),
+        },
+        'actions': {
+            'task_id': torch.tensor([
+                [0, -1],
+                [0, -1],
+                [-1, 1],
+                [-1, -1],
+            ]),
+        },
+        'is_visible': torch.zeros(4, 2, 2, dtype=torch.bool),
+    }
+    tat_s = 2.5
+    pc_term = (36.0 + 36.0 + 72.0) / 360000.0
+    episode_cost = 1.0 + tat_s / 700.0 + pc_term
+
+    targets = build_dense_reward_targets(
+        trajectory,
+        task_durations=torch.tensor([2.0, 1.0]),
+        task_release_times=torch.tensor([0.0, 0.0]),
+        satellite_sensor_power=torch.tensor([36.0, 72.0]),
+        episode_cost=episode_cost,
+    )
+
+    assert isinstance(targets, DenseRewardTargets)
+    assert targets.reward.shape == (3,)
+    assert targets.quality_delta.sum().item() == pytest.approx(1.0)
+    assert targets.tat_cost.sum().item() == pytest.approx(tat_s / 700.0)
+    assert targets.power_cost.sum().item() == pytest.approx(pc_term)
+    assert targets.reward.sum().item() == pytest.approx(-episode_cost)
+    assert targets.return_to_go[0].item() == pytest.approx(-episode_cost)
+    assert targets.return_to_go[-1] == targets.reward[-1]
+    assert targets.terminal_correction.item() == pytest.approx(-2.0)
+
+
+def test_dense_reward_does_not_use_visibility_as_input() -> None:
+    trajectory = _trajectory()
+    kwargs = dict(
+        task_durations=torch.tensor([2.0, 1.0]),
+        task_release_times=torch.tensor([0.0, 0.0]),
+        satellite_sensor_power=torch.tensor([10.0, 20.0]),
+        episode_cost=3.0,
+    )
+    expected = build_dense_reward_targets(trajectory, **kwargs)
+    trajectory['is_visible'].zero_()
+    actual = build_dense_reward_targets(trajectory, **kwargs)
+
+    assert torch.equal(actual.reward, expected.reward)
+    assert torch.equal(actual.return_to_go, expected.return_to_go)
+
+
+def test_transition_tensors_select_dense_reward_and_return_to_go() -> None:
+    trajectory = _trajectory()
+    targets = build_dense_reward_targets(
+        trajectory,
+        task_durations=torch.tensor([2.0, 1.0]),
+        task_release_times=torch.tensor([0.0, 0.0]),
+        satellite_sensor_power=torch.tensor([10.0, 20.0]),
+        episode_cost=3.0,
+    )
+
+    transitions = build_transition_tensors(
+        trajectory,
+        task_durations=torch.tensor([2.0, 1.0]),
+        episode_cost=3.0,
+        time_indices=[0, 2],
+        dense_reward_targets=targets,
+    )
+
+    assert transitions.reward.tolist() == pytest.approx(
+        targets.reward[[0, 2]].tolist(),
+    )
+    assert transitions.return_to_go.tolist() == pytest.approx(
+        targets.return_to_go[[0, 2]].tolist(),
+    )
+
+
+def test_fit_diagnostic_critics_can_target_dense_cost_to_go() -> None:
+    generator = torch.Generator().manual_seed(11)
+    action = torch.rand(100, 1, generator=generator)
+    state = torch.zeros(100, 2)
+    dense_cost_to_go = 2.0 + 3.0 * action[:, 0]
+    tensors = OfflineDatasetTensors(
+        trajectory_ids=torch.arange(100),
+        state=state,
+        action=action,
+        reward=-dense_cost_to_go,
+        next_state=state,
+        done=torch.ones(100, dtype=torch.bool),
+        episode_cost=torch.full((100,), 9.0),
+        return_to_go=-dense_cost_to_go,
+    )
+    train = OfflineDatasetTensors(*(tensor[:80] for tensor in tensors))
+    val = OfflineDatasetTensors(*(tensor[80:] for tensor in tensors))
+
+    _, summary = fit_diagnostic_critics(
+        train,
+        val,
+        hidden_dim=16,
+        epochs=120,
+        batch_size=32,
+        learning_rate=3e-3,
+        seed=5,
+        device=torch.device('cpu'),
+        target_mode='dense_cost_to_go',
+    )
+
+    assert summary['target_mode'] == 'dense_cost_to_go'
+    assert summary['all']['critic_spearman'] > 0.9
+    assert summary['all']['spearman_gain'] > 0.5

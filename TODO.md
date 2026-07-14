@@ -118,14 +118,14 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] 从现有轨迹构造 `(s,a,r,s')`，训练 state-only baseline 与
   action-conditioned Critic；1,024 场诊断未通过前半时段排序增益门槛，因此 Actor
   保持冻结，不训练 Advantage adapter。
-- [ ] 不生成新专家轨迹，先从现有转移构造可归因到单步动作的 dense reward：任务
-  进度增量、任务完成事件和传感器功耗代价；验证它与最终 `CS_paper` 的排序方向一致。
-- [ ] 只有局部奖励 Critic 明显超过 state-only baseline 后，才使用 Advantage 加权
-  训练小型 adapter；继续不使用等权专家动作 CE。
-- [ ] adapter 离线验收通过后，仅运行 Val Seen/Unseen 各 2 场 Basilisk 验真；未通过
-  时不扩大 Val，不运行 Test，也不进入 PPO。
-- [ ] 如果局部奖励仍无法提供动作级信号，则停止纯单轨迹离线更新，改为为少量同一
-  场景保存多个模型候选轨迹，再研究偏好学习或 PPO。
+- [x] 已从现有转移构造 dense reward：任务质量增量、完成时延和传感器功耗组成局部
+  奖励，终点校正确保累计奖励严格等于 `-CS_paper`。
+- [x] 已完成 1,024 场、每场 8/32 个转移的 dense Critic 对照；全时段和前半时段
+  Spearman 增益均低于 `0.05`，停止纯单轨迹离线更新，Actor 继续冻结。
+- [ ] 若继续策略进化，只为少量相同场景生成多个“模型候选轨迹”（不是专家轨迹），
+  先建立同场景偏好对，避免把场景难度误当成动作质量。
+- [ ] 同场景偏好 Critic 通过后，才使用 Advantage 加权训练小型 adapter，并仅运行
+  Val Seen/Unseen 各 2 场 Basilisk 验真；此前不扩大 Val、不运行 Test、不进入 PPO。
 
 ## 实验记录要求
 

@@ -38,6 +38,7 @@ class TransitionTensors(NamedTuple):
     next_state: torch.Tensor
     done: torch.Tensor
     episode_cost: torch.Tensor
+    return_to_go: torch.Tensor
 
 
 class OfflineDatasetTensors(NamedTuple):
@@ -50,6 +51,18 @@ class OfflineDatasetTensors(NamedTuple):
     next_state: torch.Tensor
     done: torch.Tensor
     episode_cost: torch.Tensor
+    return_to_go: torch.Tensor
+
+
+class DenseRewardTargets(NamedTuple):
+    """可解释的单步奖励分量及 ``gamma=1`` Monte Carlo 回报。"""
+
+    reward: torch.Tensor
+    return_to_go: torch.Tensor
+    quality_delta: torch.Tensor
+    tat_cost: torch.Tensor
+    power_cost: torch.Tensor
+    terminal_correction: torch.Tensor
 
 
 def compute_cs_paper_from_metrics(
@@ -195,7 +208,7 @@ def combine_transition_tensors(
     if not items:
         raise ValueError('at least one trajectory is required')
     trajectory_ids = []
-    columns: list[list[torch.Tensor]] = [[] for _ in range(6)]
+    columns: list[list[torch.Tensor]] = [[] for _ in range(7)]
     for trajectory_id, tensors in items:
         trajectory_ids.append(torch.full(
             (tensors.state.shape[0],),
@@ -212,6 +225,7 @@ def combine_transition_tensors(
         next_state=torch.cat(columns[3]),
         done=torch.cat(columns[4]),
         episode_cost=torch.cat(columns[5]),
+        return_to_go=torch.cat(columns[6]),
     )
 
 
@@ -336,6 +350,96 @@ def _action_features(
     return torch.cat((basic, pair_context))
 
 
+def build_dense_reward_targets(
+    trajectory: Mapping[str, object],
+    *,
+    task_durations: torch.Tensor,
+    task_release_times: torch.Tensor,
+    satellite_sensor_power: torch.Tensor,
+    episode_cost: float,
+) -> DenseRewardTargets:
+    """构造动作级奖励，并用终点校正确保累计值等于 ``-CS_paper``。
+
+    局部奖励为完成质量增量，减去任务完成时延和传感器功耗。最后一个转移加入
+    校正项，使 ``reward.sum() == -episode_cost``，因此 dense reward 不会改变
+    最终优化目标。
+    """
+
+    taskset = trajectory['taskset']
+    actions_container = trajectory['actions']
+    if not isinstance(taskset, Mapping):
+        raise TypeError('trajectory.taskset must be a mapping')
+    if not isinstance(actions_container, Mapping):
+        raise TypeError('trajectory.actions must be a mapping')
+    progress = torch.as_tensor(taskset['progress']).float()
+    actions = torch.as_tensor(actions_container['task_id']).long()
+    if progress.ndim != 2 or actions.ndim != 2:
+        raise ValueError('progress and actions must be time-major matrices')
+    if progress.shape[0] < 2 or actions.shape[0] != progress.shape[0]:
+        raise ValueError('trajectory must contain aligned time steps')
+    if not math.isfinite(float(episode_cost)) or episode_cost <= 0:
+        raise ValueError('episode cost must be finite and positive')
+
+    task_durations = task_durations.float()
+    task_release_times = task_release_times.float()
+    satellite_sensor_power = satellite_sensor_power.float()
+    if task_durations.shape != progress.shape[1:]:
+        raise ValueError('task durations must match the number of tasks')
+    if task_release_times.shape != task_durations.shape:
+        raise ValueError('task release times must match task durations')
+    if satellite_sensor_power.shape != actions.shape[1:]:
+        raise ValueError('sensor power must match the number of satellites')
+    if (task_durations <= 0).any() or (satellite_sensor_power < 0).any():
+        raise ValueError('durations must be positive and power non-negative')
+
+    progress_ratio = (progress / task_durations).clamp(0, 1)
+    max_progress_ratio = progress_ratio.cummax(0).values
+    completed = max_progress_ratio >= 1.0
+    cr = completed.float().mean(-1)
+    pcr = max_progress_ratio.mean(-1)
+    wcr = (
+        (completed.float() * task_durations).sum(-1)
+        / task_durations.sum()
+    )
+    quality = 0.6 * cr + 0.2 * pcr + 0.2 * wcr
+    quality_delta = quality[1:] - quality[:-1]
+
+    tat_cost = torch.zeros_like(quality_delta)
+    final_completed = completed[-1]
+    num_succeeded = int(final_completed.sum().item())
+    if num_succeeded:
+        for task_id in final_completed.nonzero().flatten().tolist():
+            completion_time = int(
+                completed[:, task_id].nonzero().flatten()[0].item(),
+            )
+            # time 0 之前的收益无法归因到已保存动作，由终点校正统一吸收。
+            if completion_time > 0:
+                tat_cost[completion_time - 1] += (
+                    completion_time - task_release_times[task_id]
+                ) / (700.0 * num_succeeded)
+
+    # PowerUsageEvaluator 对每个非空 assignment 累加 sensor.power，PC_Wh/100
+    # 因而对应除以 3600*100。最后一个无 next_state 的动作由终点校正吸收。
+    power_cost = (
+        (actions[:-1] >= 0).float() * satellite_sensor_power
+    ).sum(-1) / 360000.0
+    local_reward = quality_delta - tat_cost - power_cost
+    terminal_correction = local_reward.new_tensor(
+        -float(episode_cost),
+    ) - local_reward.sum()
+    reward = local_reward.clone()
+    reward[-1] += terminal_correction
+    return_to_go = reward.flip(0).cumsum(0).flip(0)
+    return DenseRewardTargets(
+        reward=reward,
+        return_to_go=return_to_go,
+        quality_delta=quality_delta,
+        tat_cost=tat_cost,
+        power_cost=power_cost,
+        terminal_correction=terminal_correction,
+    )
+
+
 def build_transition_tensors(
     trajectory: Mapping[str, object],
     *,
@@ -346,11 +450,13 @@ def build_transition_tensors(
     constellation_static_data: torch.Tensor | None = None,
     task_sensor_type: torch.Tensor | None = None,
     constellation_sensor_type: torch.Tensor | None = None,
+    dense_reward_targets: DenseRewardTargets | None = None,
 ) -> TransitionTensors:
     """从一条已保存轨迹抽取确定性的离线转移样本。
 
-    采用 ``gamma=1`` 的终止回报：中间奖励为 0，最后一个可用转移奖励为
-    ``-CS_paper``。所有转移同时保留正的 ``episode_cost`` 作为监督回归目标。
+    默认采用 ``gamma=1`` 的终止回报：中间奖励为 0，最后一个可用
+    转移奖励为 ``-CS_paper``。传入 ``dense_reward_targets`` 时改用已校正的
+    局部奖励和 cost-to-go。两种模式都保留正的 ``episode_cost`` 供对照。
     """
 
     constellation = trajectory['constellation']
@@ -376,6 +482,11 @@ def build_transition_tensors(
     if any(index < 0 or index >= progress.shape[0] - 1
            for index in time_indices):
         raise ValueError('time indices must identify valid transitions')
+    if (
+        dense_reward_targets is not None
+        and dense_reward_targets.reward.shape != (progress.shape[0] - 1,)
+    ):
+        raise ValueError('dense rewards must match all trajectory transitions')
     context = (
         task_static_data,
         constellation_static_data,
@@ -404,6 +515,7 @@ def build_transition_tensors(
     action_features = []
     next_states = []
     rewards = []
+    returns = []
     dones = []
     last_transition = progress.shape[0] - 2
     for index in time_indices:
@@ -446,7 +558,14 @@ def build_transition_tensors(
             constellation_sensor_type=constellation_sensor_type,
         ))
         done = index == last_transition
-        rewards.append(-float(episode_cost) if done else 0.0)
+        if dense_reward_targets is None:
+            rewards.append(-float(episode_cost) if done else 0.0)
+            returns.append(-float(episode_cost))
+        else:
+            rewards.append(float(dense_reward_targets.reward[index].item()))
+            returns.append(float(
+                dense_reward_targets.return_to_go[index].item(),
+            ))
         dones.append(done)
 
     return TransitionTensors(
@@ -460,6 +579,7 @@ def build_transition_tensors(
             float(episode_cost),
             dtype=torch.float32,
         ),
+        return_to_go=torch.tensor(returns, dtype=torch.float32),
     )
 
 
@@ -583,18 +703,19 @@ def _feature_statistics(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tenso
 def _ranking_for_subset(
     dataset: OfflineDatasetTensors,
     *,
+    target_cost: torch.Tensor,
     baseline_cost: torch.Tensor,
     critic_cost: torch.Tensor,
     mask: torch.Tensor,
 ) -> dict[str, float | bool]:
     trajectory_ids, target, baseline = aggregate_by_trajectory(
         trajectory_ids=dataset.trajectory_ids[mask],
-        target_cost=dataset.episode_cost[mask],
+        target_cost=target_cost[mask],
         predicted_cost=baseline_cost[mask],
     )
     critic_ids, critic_target, critic = aggregate_by_trajectory(
         trajectory_ids=dataset.trajectory_ids[mask],
-        target_cost=dataset.episode_cost[mask],
+        target_cost=target_cost[mask],
         predicted_cost=critic_cost[mask],
     )
     if not torch.equal(trajectory_ids, critic_ids):
@@ -618,15 +739,24 @@ def fit_diagnostic_critics(
     learning_rate: float,
     seed: int,
     device: torch.device,
+    target_mode: str = 'episode_cost',
 ) -> tuple[DiagnosticCriticBundle, dict[str, object]]:
     """训练 state baseline 与 action Critic，并执行轨迹级排序验收。"""
 
     if epochs <= 0 or batch_size <= 0:
         raise ValueError('epochs and batch_size must be positive')
+    if target_mode == 'episode_cost':
+        train_target_cost = train.episode_cost
+        val_target_cost = val.episode_cost
+    elif target_mode == 'dense_cost_to_go':
+        train_target_cost = -train.return_to_go
+        val_target_cost = -val.return_to_go
+    else:
+        raise ValueError(f'unsupported target mode: {target_mode}')
     torch.manual_seed(seed)
     state_mean, state_std = _feature_statistics(train.state)
     action_mean, action_std = _feature_statistics(train.action)
-    cost_mean, cost_std = _feature_statistics(train.episode_cost[:, None])
+    cost_mean, cost_std = _feature_statistics(train_target_cost[:, None])
     cost_mean = cost_mean.squeeze(0)
     cost_std = cost_std.squeeze(0)
 
@@ -647,7 +777,7 @@ def fit_diagnostic_critics(
 
     state = ((train.state - state_mean) / state_std).to(device)
     action = ((train.action - action_mean) / action_std).to(device)
-    target = ((train.episode_cost - cost_mean) / cost_std).to(device)
+    target = ((train_target_cost - cost_mean) / cost_std).to(device)
     generator = torch.Generator().manual_seed(seed)
     final_loss = float('nan')
     for _ in range(epochs):
@@ -683,17 +813,20 @@ def fit_diagnostic_critics(
         raise ValueError('validation set has fewer than two early transitions')
     all_ranking = _ranking_for_subset(
         val,
+        target_cost=val_target_cost,
         baseline_cost=baseline_cost,
         critic_cost=critic_cost,
         mask=all_mask,
     )
     early_ranking = _ranking_for_subset(
         val,
+        target_cost=val_target_cost,
         baseline_cost=baseline_cost,
         critic_cost=critic_cost,
         mask=early_mask,
     )
     summary: dict[str, object] = {
+        'target_mode': target_mode,
         'train_final_loss': final_loss,
         'num_train_transitions': len(train.state),
         'num_val_transitions': len(val.state),

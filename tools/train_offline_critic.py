@@ -20,6 +20,7 @@ from constellation.new_transformers.offline_critic import (
     OfflineDatasetTensors,
     TrajectoryRecord,
     audit_candidate_coverage,
+    build_dense_reward_targets,
     build_transition_tensors,
     combine_transition_tensors,
     fit_diagnostic_critics,
@@ -64,6 +65,10 @@ def load_scene_context(
     )
     return {
         'task_durations': taskset.durations.float(),
+        'task_release_times': taskset.release_times.float(),
+        'satellite_sensor_power': torch.tensor([
+            satellite.sensor.power for satellite in constellation.sort()
+        ], dtype=torch.float32),
         'task_static_data': task_static_data.float(),
         'constellation_static_data': constellation_static_data.float(),
         'task_sensor_type': task_sensor_type,
@@ -78,6 +83,7 @@ def load_transition_dataset(
     constellations_root: Path | None = None,
     split: str,
     samples_per_trajectory: int,
+    reward_mode: str = 'terminal',
 ) -> OfflineDatasetTensors:
     """把路由后的轨迹加载为紧凑 ``(s,a,r,s')`` 张量。"""
 
@@ -106,12 +112,28 @@ def load_transition_dataset(
             num_time_steps=num_time_steps,
             num_samples=samples_per_trajectory,
         )
+        if reward_mode == 'terminal':
+            dense_targets = None
+        elif reward_mode == 'dense':
+            dense_targets = build_dense_reward_targets(
+                trajectory,
+                task_durations=context['task_durations'],
+                task_release_times=context['task_release_times'],
+                satellite_sensor_power=context['satellite_sensor_power'],
+                episode_cost=record.episode_cost,
+            )
+        else:
+            raise ValueError(f'unsupported reward mode: {reward_mode}')
         items.append((trajectory_id, build_transition_tensors(
             trajectory,
-            task_durations=context.pop('task_durations'),
+            task_durations=context['task_durations'],
             episode_cost=record.episode_cost,
             time_indices=indices,
-            **context,
+            task_static_data=context['task_static_data'],
+            constellation_static_data=context['constellation_static_data'],
+            task_sensor_type=context['task_sensor_type'],
+            constellation_sensor_type=context['constellation_sensor_type'],
+            dense_reward_targets=dense_targets,
         )))
         if (trajectory_id + 1) % 100 == 0:
             print(
@@ -162,6 +184,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--learning-rate', type=float, default=1e-3)
+    parser.add_argument(
+        '--target-mode',
+        choices=['episode_cost', 'dense_cost_to_go'],
+        default='episode_cost',
+    )
     parser.add_argument('--seed', type=int, default=3407)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--num-threads', type=int, default=8)
@@ -200,12 +227,16 @@ def main() -> None:
         f'train={len(train_records)} val={len(val_records)}',
         flush=True,
     )
+    reward_mode = (
+        'dense' if args.target_mode == 'dense_cost_to_go' else 'terminal'
+    )
     train = load_transition_dataset(
         train_records,
         tasksets_root=args.tasksets_root,
         constellations_root=args.constellations_root,
         split=args.split,
         samples_per_trajectory=args.samples_per_trajectory,
+        reward_mode=reward_mode,
     )
     val = load_transition_dataset(
         val_records,
@@ -213,6 +244,7 @@ def main() -> None:
         constellations_root=args.constellations_root,
         split=args.split,
         samples_per_trajectory=args.samples_per_trajectory,
+        reward_mode=reward_mode,
     )
     bundle, training_summary = fit_diagnostic_critics(
         train,
@@ -223,6 +255,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         seed=args.seed,
         device=device,
+        target_mode=args.target_mode,
     )
 
     coverage = audit_candidate_coverage(
@@ -248,6 +281,7 @@ def main() -> None:
             'epochs': args.epochs,
             'batch_size': args.batch_size,
             'learning_rate': args.learning_rate,
+            'target_mode': args.target_mode,
             'seed': args.seed,
             'device': str(device),
             'num_threads': args.num_threads,
