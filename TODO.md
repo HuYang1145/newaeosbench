@@ -115,12 +115,17 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 
 下一轮优先方向：
 
-- 不使用专家动作 CE，先定义“低价值重复”和“必要协作”的可测标签。
-- 将硬容量 1 改为自适应容量 1–2：只有第二颗卫星的模型收益足够高，或需要延续上一
-  时刻 owner 时才允许重复；先做离线回放和 2+2 筛选。
-- 确定约束不会显著损害 CR/PCR/WCR 后，再考虑用 PPO 直接优化 `CS_paper`。
-- 增强连续观测、课程学习和轻量状态特征暂缓；若仍暴露可行性问题，再用 hard
-  negatives 重训 TimeModel。
+- [x] 从现有轨迹构造 `(s,a,r,s')`，训练 state-only baseline 与
+  action-conditioned Critic；1,024 场诊断未通过前半时段排序增益门槛，因此 Actor
+  保持冻结，不训练 Advantage adapter。
+- [ ] 不生成新专家轨迹，先从现有转移构造可归因到单步动作的 dense reward：任务
+  进度增量、任务完成事件和传感器功耗代价；验证它与最终 `CS_paper` 的排序方向一致。
+- [ ] 只有局部奖励 Critic 明显超过 state-only baseline 后，才使用 Advantage 加权
+  训练小型 adapter；继续不使用等权专家动作 CE。
+- [ ] adapter 离线验收通过后，仅运行 Val Seen/Unseen 各 2 场 Basilisk 验真；未通过
+  时不扩大 Val，不运行 Test，也不进入 PPO。
+- [ ] 如果局部奖励仍无法提供动作级信号，则停止纯单轨迹离线更新，改为为少量同一
+  场景保存多个模型候选轨迹，再研究偏好学习或 PPO。
 
 ## 实验记录要求
 
