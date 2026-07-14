@@ -138,13 +138,21 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] 已对 16 场做严格 4-fold scene 验证。`hidden=64, epochs=200` 的平均
   pairwise accuracy 由 baseline `0.6250` 提高到 `0.6771`，增益 `+0.0521`；
   但只有 `2/4` fold 通过门槛。小网络/少轮数扫描更差，Actor 继续冻结。
-- [ ] 64 场扩展实验正在运行，仍保持每场 `1 greedy + 3 seeded top-k`：
+- [x] 已完成 64 场扩展实验，仍保持每场 `1 greedy + 3 seeded top-k`：
   `LIMIT=64 SCENE_WORKERS=4 NUM_THREADS=6 OUTPUT_ROOT=work_dirs/same_scene_candidates_stage3_200k_64 bash scripts/run_same_scene_candidate_smoke.sh`。
-  使用 Stage3-200k `iter_200000/model.pth`，tmux 为 `aeos-same-scene-64`，
-  单 rank 日志位于输出目录的 `logs/`。已有前 16 场通过硬链接复用，只补跑剩余
-  48 场；生成成功后 `aeos-critic-64` 将自动执行 `hidden=64, epochs=200` 的严格
-  4-fold Critic，输出到 `work_dirs/same_scene_preference_critic_64/`。
-- [ ] 同场景偏好 Critic 通过后，才使用 Advantage 加权训练小型 adapter，并仅运行
+  共 256 条轨迹、384 个偏好对；`49/64` 场存在优于 greedy 的采样候选。但严格
+  4-fold 裁判模型（Critic）平均准确率仅 `0.5938`，相对 baseline 增益 `+0.0260`，
+  `0/4` fold 通过，Actor 继续冻结。
+- [x] P0 误差审计完成：过滤小 margin 不能修复排序；裁判模型 top-1 只在
+  `22/64` 场选中真实最优。去掉 scene 86 离群点后，所选候选平均比 greedy 高
+  `0.0175 CS_paper`，当前轨迹级 MLP 停止进入 Actor 更新。
+- [x] P1 第一分歧点数据完成：384 对均有动作分歧，363 对的可重建决策前状态全部
+  一致；排除 21 对 `t=0` 初始传感器状态缺失和 54 对 margin `<0.05` 后，得到
+  311 个 Graph-Q 可用偏好样本。首次分歧中位数为第 14 步，通常只改变 1 颗卫星。
+- [ ] P2 使用 311 个第一分歧点样本实现轻量 Graph-Q 裁判模型：输入当前状态和
+  精确卫星—任务联合动作，不使用未来轨迹、`is_visible` 或在线 Basilisk；先做
+  scene-level 4-fold，不更新 Actor。
+- [ ] Graph-Q 裁判模型通过后，才使用 Advantage/DPO 式偏好训练小型 adapter，并仅运行
   Val Seen/Unseen 各 2 场 Basilisk 验真；此前不扩大 Val、不运行 Test、不进入 PPO。
 
 ## 实验记录要求
