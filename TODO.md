@@ -122,8 +122,24 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
   奖励，终点校正确保累计奖励严格等于 `-CS_paper`。
 - [x] 已完成 1,024 场、每场 8/32 个转移的 dense Critic 对照；全时段和前半时段
   Spearman 增益均低于 `0.05`，停止纯单轨迹离线更新，Actor 继续冻结。
-- [ ] 若继续策略进化，只为少量相同场景生成多个“模型候选轨迹”（不是专家轨迹），
+- [x] 已为少量相同场景生成多个“模型候选轨迹”（不是专家轨迹），
   先建立同场景偏好对，避免把场景难度误当成动作质量。
+- [x] 首轮 smoke：使用 Stage3-200k checkpoint，对 train 前 2 个场景各生成
+  `1 greedy + 3 seeded top-k` 候选。命令为
+  `bash scripts/run_same_scene_candidate_smoke.sh`；输出位于
+  `work_dirs/same_scene_candidates_stage3_200k_smoke/`，单候选日志位于其
+  `logs/`，汇总为 `summary.json`。两场均形成 6 个偏好对，其中一场
+  最佳采样候选比贪心降低 `0.0938 CS_paper`。
+- [x] 已扩大到 train 前 16 个场景：
+  `LIMIT=16 SCENE_WORKERS=4 OUTPUT_ROOT=work_dirs/same_scene_candidates_stage3_200k_16 bash scripts/run_same_scene_candidate_smoke.sh`。共 4 种候选、每种 4 个 scene worker，
+  本机 CPU 用时约 46 分钟。`16/16` 场都有 4 条不同动作序列，共
+  96 个偏好对；`11/16` 场的采样候选优于贪心，平均最佳改进
+  `0.1987 CS_paper`。
+- [x] 已对 16 场做严格 4-fold scene 验证。`hidden=64, epochs=200` 的平均
+  pairwise accuracy 由 baseline `0.6250` 提高到 `0.6771`，增益 `+0.0521`；
+  但只有 `2/4` fold 通过门槛。小网络/少轮数扫描更差，Actor 继续冻结。
+- [ ] 若继续该方向，优先把场景数扩大到 64，仍保持每场 4 个候选；
+  目标是提高跨场景稳定性，而不是继续在 16 场上调 Critic 参数。
 - [ ] 同场景偏好 Critic 通过后，才使用 Advantage 加权训练小型 adapter，并仅运行
   Val Seen/Unseen 各 2 场 Basilisk 验真；此前不扩大 Val、不运行 Test、不进入 PPO。
 

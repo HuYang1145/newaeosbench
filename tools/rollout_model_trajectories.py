@@ -1,12 +1,14 @@
 """运行已训练的 AEOS 模型并保存候选轨迹。
 
 属于 Stage-2/Stage-3 工作流工具。加载 checkpoint，在指定划分上通过 Basilisk
-场景运行贪心模型策略，输出轨迹 ``.pth`` 文件和指标 ``.json`` 文件供后续 tau_e 过滤使用。
+场景运行贪心或 seeded top-k 采样策略，输出轨迹 ``.pth`` 和指标
+``.json``。默认仍为原始贪心行为。
 """
 
 import argparse
 import os
 import pathlib
+from typing import Literal
 
 import torch
 from todd.patches.py_ import json_dump, json_load
@@ -44,6 +46,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--overwrite', action='store_true')
+    parser.add_argument(
+        '--strategy',
+        choices=['greedy', 'top_k_sample'],
+        default='greedy',
+    )
+    parser.add_argument('--top-k', type=int, default=3)
+    parser.add_argument('--temperature', type=float, default=0.7)
+    parser.add_argument('--seed', type=int, default=3407)
     return parser.parse_args()
 
 
@@ -58,6 +68,54 @@ def load_state_dict(path: pathlib.Path) -> dict[str, torch.Tensor]:
     raise TypeError(f'Unsupported checkpoint format: {type(checkpoint)!r}')
 
 
+def select_action_indices(
+    logits: torch.Tensor,
+    *,
+    strategy: Literal['greedy', 'top_k_sample'],
+    top_k: int = 3,
+    temperature: float = 0.7,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """从含 null 动作的 logits 中选择索引。
+
+    ``top_k_sample`` 只在每颗卫星的前 ``k`` 个候选中采样，避免把
+    高不确定性变成接近随机的全任务搜索。
+    """
+
+    if strategy == 'greedy':
+        return logits.argmax(-1)
+    if strategy != 'top_k_sample':
+        raise ValueError(f'unsupported candidate strategy: {strategy}')
+    if top_k <= 0:
+        raise ValueError('top_k must be positive')
+    if temperature <= 0:
+        raise ValueError('temperature must be positive')
+
+    k = min(top_k, logits.shape[-1])
+    top_values, top_indices = logits.topk(k, dim=-1)
+    probabilities = (top_values / temperature).softmax(-1)
+    sampled_offsets = torch.multinomial(
+        probabilities.reshape(-1, k),
+        num_samples=1,
+        generator=generator,
+    ).reshape(*probabilities.shape[:-1], 1)
+    return top_indices.gather(-1, sampled_offsets).squeeze(-1)
+
+
+def write_rollout_metadata(
+    output_root: pathlib.Path,
+    *,
+    metadata: dict[str, object],
+    rank: int,
+) -> None:
+    """只由 rank 0 写共享候选目录的运行元数据。"""
+
+    if rank != 0:
+        return
+    output_root.mkdir(parents=True, exist_ok=True)
+    json_dump(metadata, str(output_root / 'rollout_metadata.json'))
+
+
 class GreedyModelAlgorithm(BaseAlgorithm):
 
     def __init__(
@@ -66,11 +124,19 @@ class GreedyModelAlgorithm(BaseAlgorithm):
         checkpoint: pathlib.Path,
         device: torch.device,
         statistics: Statistics,
+        strategy: Literal['greedy', 'top_k_sample'] = 'greedy',
+        top_k: int = 3,
+        temperature: float = 0.7,
+        seed: int = 3407,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._device = device
         self._statistics = statistics
+        self._strategy = strategy
+        self._top_k = top_k
+        self._temperature = temperature
+        self._generator = torch.Generator(device=device).manual_seed(seed)
 
         model = Model()
         missing = model.load_state_dict(
@@ -147,7 +213,13 @@ class GreedyModelAlgorithm(BaseAlgorithm):
 
         with torch.inference_mode():
             logits = self._model.predict(*self._build_inputs(taskset, constellation))
-        relative_task_ids = logits.argmax(-1).squeeze(0).cpu() - 1
+        relative_task_ids = select_action_indices(
+            logits,
+            strategy=self._strategy,
+            top_k=self._top_k,
+            temperature=self._temperature,
+            generator=self._generator,
+        ).squeeze(0).cpu() - 1
 
         task_ids = taskset.ids
         assignment = torch.where(
@@ -189,6 +261,10 @@ def rollout_one(
     output_root: pathlib.Path,
     statistics: Statistics,
     overwrite: bool,
+    strategy: Literal['greedy', 'top_k_sample'] = 'greedy',
+    top_k: int = 3,
+    temperature: float = 0.7,
+    seed: int = 3407,
 ) -> None:
     trajectory_dir = output_root / split / f'{id_ // 1000:02}'
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -231,6 +307,10 @@ def rollout_one(
         checkpoint=checkpoint,
         device=device,
         statistics=statistics,
+        strategy=strategy,
+        top_k=top_k,
+        temperature=temperature,
+        seed=seed,
     )
     algorithm.prepare(environment=environment, task_manager=task_manager)
     controller.run(algorithm, progress_bar=False)
@@ -261,6 +341,19 @@ def main() -> None:
     )
     device = torch.device(args.device)
 
+    write_rollout_metadata(
+        args.output_root,
+        metadata={
+            'checkpoint': str(args.checkpoint),
+            'split': args.split,
+            'strategy': args.strategy,
+            'top_k': args.top_k,
+            'temperature': args.temperature,
+            'seed': args.seed,
+        },
+        rank=rank,
+    )
+
     for index, id_ in enumerate(ids):
         if index % world_size != rank:
             continue
@@ -272,6 +365,10 @@ def main() -> None:
             output_root=args.output_root,
             statistics=statistics,
             overwrite=args.overwrite,
+            strategy=args.strategy,
+            top_k=args.top_k,
+            temperature=args.temperature,
+            seed=args.seed,
         )
 
 
