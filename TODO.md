@@ -149,15 +149,20 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 - [x] P1 第一分歧点数据完成：384 对均有动作分歧，363 对的可重建决策前状态全部
   一致；排除 21 对 `t=0` 初始传感器状态缺失和 54 对 margin `<0.05` 后，得到
   311 个 Graph-Q 可用偏好样本。首次分歧中位数为第 14 步，通常只改变 1 颗卫星。
-- [ ] P2 正在扩展到 256 个独立 train 场景并训练轻量 Graph-Q 裁判模型：复用已有
-  64 场，新增候选使用 `1 greedy + 3 seeded top-k`；输入当前状态、上一时刻联合
-  动作和本时刻精确卫星—任务联合动作，不使用未来轨迹、`is_visible` 或在线
-  Basilisk。包装脚本为 `scripts/run_graph_q_p2_256.sh`，tmux 会话为
-  `aeos_graph_q_p2_256`，总日志为
-  `work_dirs/first_divergence_graph_q_256/pipeline.log`，最终 4-fold 汇总为
-  `work_dirs/first_divergence_graph_q_256/summary.json`。Actor 保持冻结。
-- [ ] Graph-Q 裁判模型通过后，才使用 Advantage/DPO 式偏好训练小型 adapter，并仅运行
-  Val Seen/Unseen 各 2 场 Basilisk 验真；此前不扩大 Val、不运行 Test、不进入 PPO。
+- [x] P2 已完成 256 个独立 train 场景的轻量 Graph-Q 裁判模型实验：共生成
+  1,024 条轨迹和 1,536 个候选对，得到 1,286 个可用第一分歧点样本。Graph-Q
+  合并排序准确率为 `0.5210`，相对 baseline `0.4914` 仅提升 `+0.0295`，
+  `0/4` fold 通过。
+  平均 regret 从 `0.5211` 恶化到 `0.6522`，所选候选平均比 greedy 高
+  `0.0880 CS_paper`。结果见
+  `work_dirs/first_divergence_graph_q_256/summary.json`。
+- [x] P2 按门槛停止：不使用该 Graph-Q 更新 Actor，不训练 Advantage/DPO adapter，
+  不运行 Val/Test，也不进入 PPO。64 场扩大到 256 场后准确率仍约 52%，说明继续
+  增加同类场景或只扩大裁判网络不能解决“第一分歧动作与 3,600 步最终回报之间的
+  长期归因噪声”。
+- [ ] 下一条策略进化路线待确认：不直接用通用小语言模型替换 Graph-Q。优先比较
+  能读取轨迹前缀的轻量 Decision Transformer、直接偏好更新原 Actor，以及
+  IQL/AWR 等保守离线强化学习；新实验必须先定义小样本验收门槛和回滚点。
 
 ## 实验记录要求
 
