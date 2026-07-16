@@ -34,11 +34,14 @@ class TemporalHistoryTensors(NamedTuple):
         batch_size: int,
         num_satellites: int,
         num_tasks: int,
+        check_values: bool = True,
     ) -> None:
         shape = (batch_size, num_satellites)
         for name, value in self._asdict().items():
             if value.shape != shape:
                 raise ValueError(f'{name} must have shape {shape}')
+        if not check_values:
+            return
         available = self.previous_task_available.bool()
         indices = self.previous_task_indices
         invalid_available = available & ((indices < 0) | (indices >= num_tasks))
@@ -343,6 +346,7 @@ class TemporalAdapter(nn.Module):
             batch_size=batch_size,
             num_satellites=num_satellites,
             num_tasks=num_tasks,
+            check_values=not task_logits.is_cuda,
         )
 
         dtype = satellite_features.dtype

@@ -129,6 +129,22 @@ def test_temporal_adapter_rejects_available_out_of_range_previous_task() -> None
         raise AssertionError('out-of-range previous task must fail')
 
 
+def test_history_shape_validation_can_skip_value_reductions(monkeypatch) -> None:
+    history = _history()
+
+    def fail_any(self, *args, **kwargs):
+        raise AssertionError('hot-path validation must not reduce tensor values')
+
+    monkeypatch.setattr(torch.Tensor, 'any', fail_any)
+
+    history.validate(
+        batch_size=1,
+        num_satellites=2,
+        num_tasks=3,
+        check_values=False,
+    )
+
+
 def test_masked_bce_ignores_censored_entries() -> None:
     logits = torch.tensor([10., -10.], requires_grad=True)
 
