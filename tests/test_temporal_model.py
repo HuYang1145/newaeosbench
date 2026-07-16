@@ -1,8 +1,10 @@
 import torch
+from todd.configs import PyConfig
 
 from constellation.new_transformers.dataset import JointBatch, TemporalBatch
 from constellation.new_transformers.model import JointModel, Model
 from constellation.new_transformers.temporal_adapter import TemporalHistoryTensors
+from constellation.rl.eval_all import build_eval_metadata, build_policy_kwargs
 
 
 def _tiny_model_kwargs() -> dict[str, object]:
@@ -235,3 +237,60 @@ def test_temporal_joint_model_backward_and_step_only_update_adapter() -> None:
         'temporal_event_time_loss',
     ):
         assert key in memo
+
+
+def test_temporal_adapter_pilot_config_freezes_stage3_backbone() -> None:
+    config = PyConfig.load(
+        'constellation/new_transformers/config_temporal_adapter_p0.py',
+    )
+
+    model = config.trainer.model
+    assert config.trainer.iters == 10_000
+    assert model.use_temporal_adapter is True
+    assert model.freeze_temporal_backbone is True
+    assert model.temporal_horizons == (5, 15, 30, 300)
+    assert model.assignment_loss_weight == 1.0
+    assert model.temporal_visible_loss_weight == 1.0
+    assert model.temporal_progress_loss_weight == 1.0
+    assert model.temporal_completion_loss_weight == 1.0
+    assert model.temporal_event_time_loss_weight == 1.0
+    assert config.trainer.dataset.include_temporal_history is True
+    assert config.validator.dataset.include_temporal_history is True
+    assert config.trainer.dataset.annotation_file == (
+        'train_paper_stage3_tau_e_existing.json'
+    )
+
+
+def test_eval_policy_kwargs_and_metadata_record_temporal_adapter() -> None:
+    kwargs = build_policy_kwargs(
+        ['stage3.pth', 'temporal.pth'],
+        None,
+        feasibility_penalty_threshold=None,
+        feasibility_penalty_strength=None,
+        use_temporal_adapter=True,
+        temporal_adapter_hidden_width=48,
+        temporal_residual_scale=0.25,
+    )
+    actor = kwargs['actor_model_kwargs']
+
+    assert actor['use_temporal_adapter'] is True
+    assert actor['temporal_adapter_hidden_width'] == 48
+    assert actor['temporal_residual_scale'] == 0.25
+
+    metadata = build_eval_metadata(
+        split='val_seen',
+        world_size=8,
+        max_scenes=8,
+        load_model_from=['stage3.pth', 'temporal.pth'],
+        feasibility_threshold=None,
+        feasibility_penalty_threshold=None,
+        feasibility_penalty_strength=None,
+        coordination_diagnostics_top_k=None,
+        use_temporal_adapter=True,
+        temporal_adapter_hidden_width=48,
+        temporal_residual_scale=0.25,
+    )
+
+    assert metadata['use_temporal_adapter'] is True
+    assert metadata['temporal_adapter_hidden_width'] == 48
+    assert metadata['temporal_residual_scale'] == 0.25
