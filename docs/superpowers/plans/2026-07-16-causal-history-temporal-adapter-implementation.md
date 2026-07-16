@@ -538,7 +538,7 @@ Commit: `feat: add temporal adapter training and evaluation switches`
 **Files:**
 - Verify only; no new production behavior.
 
-- [ ] **Step 1: 运行 P0 定向测试集**
+- [x] **Step 1: 运行 P0 定向测试集**
 
 Run:
 
@@ -554,7 +554,7 @@ Run:
 
 Expected: all tests pass。
 
-- [ ] **Step 2: 运行受影响旧回归**
+- [x] **Step 2: 运行受影响旧回归**
 
 Run:
 
@@ -570,7 +570,7 @@ Run:
 
 Expected: all tests pass。
 
-- [ ] **Step 3: 静态检查与 diff 检查**
+- [x] **Step 3: 静态检查与 diff 检查**
 
 Run: `/home/hy/miniconda3/envs/aeos/bin/python -m py_compile constellation/new_transformers/temporal_history.py constellation/new_transformers/temporal_adapter.py constellation/new_transformers/multi_horizon_edge_labels.py constellation/new_transformers/dataset.py constellation/new_transformers/model.py constellation/rl/environment.py constellation/rl/controller_environment.py constellation/rl/policy.py constellation/rl/eval_all.py`
 
@@ -578,14 +578,23 @@ Run: `git diff --check`
 
 Expected: both exit 0。
 
-- [ ] **Step 4: 运行真实 Dataset + forward/backward/optimizer smoke**
+- [x] **Step 4: 运行真实 Dataset + forward/backward/optimizer smoke**
 
 从 `train_paper_stage3_tau_e_existing.json` 读取一个真实样本，使用 tiny 模型或显存允许时 Stage3 checkpoint；断言：loss 有限、adapter grad 有限、一步后仅 adapter 参数改变。该步骤不启动正式 10k 训练。
 
-- [ ] **Step 5: 记录未执行的实验门槛**
+- [x] **Step 5: 记录未执行的实验门槛**
 
 工程实现完成不等于模型表现通过。明确记录 P0-B 训练、离线 PR-AUC/Brier/ECE、8+8 Val、64+64 Val、推理开销和 `CS_paper` 仍需后续实验，不编造结果。
 
-- [ ] **Step 6: 最终提交**
+2026-07-16 工程验收记录：
+
+- `tests/` 全量回归为 174 passed；P0 定向测试和受影响旧回归均包含在内；
+- 生产文件 `py_compile` 与 `git diff --check` 均退出 0；
+- 真实 Stage3 annotation 样本完成 forward、backward、optimizer step，loss 和梯度有限，且仅 adapter 参数更新；
+- Stage3 200k checkpoint 按正式 `strict=False` 加载协议验证：关闭 adapter 与启用零初始化 adapter 的 logits 逐位一致；
+- CUDA 热路径已移除 history value validation 引起的 DtoH 同步。无外部负载时的初步交错基准为约 5.46% 开销，尚未达到预注册的 5% 行为门槛；需在 GPU 无外部作业时复测，必要时继续优化；
+- 尚未执行正式 10k P0-B 训练、离线 PR-AUC/Brier/ECE、历史打乱消融、8+8/64+64 Val、行为指标和 `CS_paper` 对比，因此当前只确认工程管线成立，不宣称模型表现已经提升。
+
+- [x] **Step 6: 最终提交**
 
 Commit: `test: verify causal history temporal adapter pipeline`
