@@ -20,6 +20,7 @@ __all__ = [
     'DynamicTasksetData',
     'Actions',
     'TrajectoryData',
+    'TemporalBatch',
     'Batch',
     'JointBatch',
     'Statistics',
@@ -49,7 +50,9 @@ from constellation import (
 from constellation.data import Constellation, TaskSet
 
 from .constants import TIME_SCALE
+from .multi_horizon_edge_labels import build_batched_edge_outcomes
 from .registries import ConstellationDatasetRegistry
+from .temporal_history import build_prefix_history
 
 
 class DynamicConstellationData(TypedDict):
@@ -93,6 +96,31 @@ class TrajectoryData(TypedDict):
     is_visible: torch.Tensor
 
 
+class TemporalBatch(NamedTuple):
+    """P0 历史输入与真实执行边结果标签。"""
+
+    previous_task_indices: torch.Tensor
+    previous_task_available: torch.Tensor
+    previous_was_idle: torch.Tensor
+    run_lengths: torch.Tensor
+    switch_count_30: torch.Tensor
+    switch_count_60: torch.Tensor
+    outcome_valid: torch.Tensor
+    visible_next: torch.Tensor
+    progress_next: torch.Tensor
+    completed_next: torch.Tensor
+    horizons: torch.Tensor
+    visible: torch.Tensor
+    visible_observed: torch.Tensor
+    progress: torch.Tensor
+    progress_observed: torch.Tensor
+    completed: torch.Tensor
+    completion_observed: torch.Tensor
+    time_to_first_visible: torch.Tensor
+    time_to_first_progress: torch.Tensor
+    time_to_completion: torch.Tensor
+
+
 class Batch(NamedTuple):
     id_: int
     annotation_id: int
@@ -105,6 +133,7 @@ class Batch(NamedTuple):
     tasks_data: torch.Tensor
     tasks_mask: torch.Tensor
     actions_task_id: torch.Tensor  # TODO: rename
+    temporal: TemporalBatch | None = None
 
 
 class JointBatch(NamedTuple):
@@ -123,6 +152,7 @@ class JointBatch(NamedTuple):
     constraint_constellation_data: torch.Tensor
     constraint_tasks_data: torch.Tensor
     constraint_durations: torch.Tensor
+    temporal: TemporalBatch | None = None
 
 
 class Statistics(NamedTuple):
@@ -198,6 +228,8 @@ class Dataset(torch.utils.data.Dataset[Batch]):
         annotation_file: str | None = None,
         batch_size: int,
         normalize: bool = True,
+        include_temporal_history: bool = False,
+        temporal_horizons: tuple[int, ...] = (5, 15, 30, 300),
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -210,6 +242,15 @@ class Dataset(torch.utils.data.Dataset[Batch]):
         )
 
         self._batch_size = batch_size
+        self._include_temporal_history = include_temporal_history
+        self._temporal_horizons = tuple(int(h) for h in temporal_horizons)
+        if include_temporal_history and (
+            not self._temporal_horizons
+            or any(h <= 0 for h in self._temporal_horizons)
+            or len(set(self._temporal_horizons))
+            != len(self._temporal_horizons)
+        ):
+            raise ValueError('temporal_horizons must be unique and positive')
 
         if normalize:
             self._statistics: Statistics = torch.load(
@@ -328,30 +369,52 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             id_,
         )
         full_tasks_data = tasks_data
+        task_durations = full_tasks_data[0, :, 2].clone()
 
         # a time step is valid iff any task is valid
-        indices = tasks_mask.any(-1).nonzero().flatten().tolist()
+        valid_time_steps = tasks_mask.any(-1)
+        include_temporal_history = getattr(
+            self,
+            '_include_temporal_history',
+            False,
+        )
+        if include_temporal_history:
+            valid_time_steps = valid_time_steps.clone()
+            valid_time_steps[0] = False
+            valid_time_steps[-1] = False
+        indices = valid_time_steps.nonzero().flatten().tolist()
         if len(indices) > self._batch_size:
             indices = random.sample(indices, self._batch_size)
 
         tasks_sensor_type = tasks_sensor_type[indices]
         tasks_data = tasks_data[indices]
         tasks_mask = tasks_mask[indices]
+        temporal_candidate_mask = tasks_mask.clone()
 
         # TODO: rename, `actions_task_id` is ambiguous
         actions_task_id = self._load_actions(trajectory['actions'], indices)
 
         # remove the tasks that are never valid
         task_is_valid = tasks_mask.any(0)
+        tasks_id_mapper = task_is_valid.cumsum(0) - 1
         if not task_is_valid.all():
             tasks_sensor_type = tasks_sensor_type[:, task_is_valid]
             tasks_data = tasks_data[:, task_is_valid]
             tasks_mask = tasks_mask[:, task_is_valid]
-            tasks_id_mapper = task_is_valid.cumsum(0) - 1
             actions_task_id = torch.where(
                 actions_task_id == -1,
                 actions_task_id,
                 tasks_id_mapper[actions_task_id],
+            )
+
+        temporal = None
+        if include_temporal_history:
+            temporal = self._build_temporal_batch(
+                trajectory=trajectory,
+                indices=indices,
+                candidate_mask=temporal_candidate_mask,
+                task_durations=task_durations,
+                tasks_id_mapper=tasks_id_mapper,
             )
 
         # ensure that `actions_task_id` is valid
@@ -378,13 +441,23 @@ class Dataset(torch.utils.data.Dataset[Batch]):
                 id_,
                 time_indices,
             )
-            constellation_sensor_type = full_constellation_sensor_type[indices]
-            constellation_sensor_enabled = full_constellation_sensor_enabled[
-                indices
+            state_indices = (
+                [time_step - 1 for time_step in indices]
+                if include_temporal_history else indices
+            )
+            constellation_sensor_type = full_constellation_sensor_type[
+                state_indices
             ]
-            constellation_data = full_constellation_data[indices]
-            constellation_mask = full_constellation_mask[indices]
+            constellation_sensor_enabled = full_constellation_sensor_enabled[
+                state_indices
+            ]
+            constellation_data = full_constellation_data[state_indices]
+            constellation_mask = full_constellation_mask[state_indices]
         else:
+            state_indices = (
+                [time_step - 1 for time_step in indices]
+                if include_temporal_history else indices
+            )
             (
                 constellation_sensor_type,
                 constellation_sensor_enabled,
@@ -393,7 +466,7 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             ) = self._load_constellation(
                 trajectory['constellation'],
                 id_,
-                indices,
+                state_indices,
             )
 
         if self.normalize:
@@ -408,7 +481,7 @@ class Dataset(torch.utils.data.Dataset[Batch]):
                     (full_tasks_data - self._statistics.taskset_mean) /
                     (self._statistics.taskset_std + 1e-6)
                 )
-                constellation_data = full_constellation_data[indices]
+                constellation_data = full_constellation_data[state_indices]
                 tasks_data = full_tasks_data[indices]
                 if not task_is_valid.all():
                     tasks_data = tasks_data[:, task_is_valid]
@@ -433,11 +506,74 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             tasks_data,
             tasks_mask,
             actions_task_id,
+            temporal,
         )
 
         if return_full_data:
             return batch, full_constellation_data, full_tasks_data
         return batch
+
+    def _build_temporal_batch(
+        self,
+        *,
+        trajectory: TrajectoryData,
+        indices: list[int],
+        candidate_mask: torch.Tensor,
+        task_durations: torch.Tensor,
+        tasks_id_mapper: torch.Tensor,
+    ) -> TemporalBatch:
+        actions = trajectory['actions']['task_id']
+        num_tasks = trajectory['taskset']['progress'].shape[1]
+        candidate_ids = torch.arange(num_tasks).repeat(len(indices), 1)
+        history = build_prefix_history(
+            actions,
+            torch.tensor(indices, dtype=torch.long),
+            candidate_global_task_ids=candidate_ids,
+            candidate_mask=candidate_mask,
+        )
+        previous_task_indices = torch.where(
+            history.previous_task_available,
+            tasks_id_mapper[history.previous_task_indices.clamp_min(0)],
+            history.previous_task_indices.new_full((), -1),
+        )
+
+        horizons = getattr(self, '_temporal_horizons', (5, 15, 30, 300))
+        outcomes = build_batched_edge_outcomes(
+            actions=actions,
+            is_visible=trajectory['is_visible'],
+            progress=trajectory['taskset']['progress'],
+            task_durations=task_durations,
+            horizons=horizons,
+        )
+
+        def stack_horizons(name: str) -> torch.Tensor:
+            return torch.stack([
+                getattr(outcomes.horizons[horizon], name)[indices]
+                for horizon in horizons
+            ], -1)
+
+        return TemporalBatch(
+            previous_task_indices=previous_task_indices,
+            previous_task_available=history.previous_task_available,
+            previous_was_idle=history.previous_was_idle,
+            run_lengths=history.run_lengths,
+            switch_count_30=history.switch_count_30,
+            switch_count_60=history.switch_count_60,
+            outcome_valid=outcomes.valid[indices],
+            visible_next=outcomes.visible_next[indices],
+            progress_next=outcomes.progress_next[indices],
+            completed_next=outcomes.completed_next[indices],
+            horizons=torch.tensor(horizons, dtype=torch.long),
+            visible=stack_horizons('visible'),
+            visible_observed=stack_horizons('visible_observed'),
+            progress=stack_horizons('progress'),
+            progress_observed=stack_horizons('progress_observed'),
+            completed=stack_horizons('completed'),
+            completion_observed=stack_horizons('completion_observed'),
+            time_to_first_visible=stack_horizons('time_to_first_visible'),
+            time_to_first_progress=stack_horizons('time_to_first_progress'),
+            time_to_completion=stack_horizons('time_to_completion'),
+        )
 
     def __getitem__(self, index: int) -> Batch:
         id_, best_epoch_, trajectory = self._load_trajectory(index)
@@ -558,7 +694,17 @@ class JointDataset(Dataset):
         ) = constraint_data.unbind(-1)
 
         return JointBatch(
-            *batch,
+            id_=batch.id_,
+            annotation_id=batch.annotation_id,
+            time_steps=batch.time_steps,
+            constellation_sensor_type=batch.constellation_sensor_type,
+            constellation_sensor_enabled=batch.constellation_sensor_enabled,
+            constellation_data=batch.constellation_data,
+            constellation_mask=batch.constellation_mask,
+            tasks_sensor_type=batch.tasks_sensor_type,
+            tasks_data=batch.tasks_data,
+            tasks_mask=batch.tasks_mask,
+            actions_task_id=batch.actions_task_id,
             constraint_time_steps=constraint_time_steps,
             constraint_constellation_data=full_constellation_data[
                 constraint_time_steps,
@@ -569,4 +715,5 @@ class JointDataset(Dataset):
                 constraint_task_ids,
             ],
             constraint_durations=constraint_durations.float() / TIME_SCALE,
+            temporal=batch.temporal,
         )
