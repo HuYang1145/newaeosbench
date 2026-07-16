@@ -140,6 +140,7 @@ def test_temporal_residual_scale_changes_null_and_task_logits() -> None:
         temporal_residual_scale=2.,
     ).eval()
     with torch.no_grad():
+        model._transformer._decoder._null_task.zero_()
         adapter = model._transformer._temporal_adapter
         assert adapter is not None
         adapter.null_residual.bias.fill_(0.25)
@@ -194,6 +195,8 @@ def test_temporal_joint_model_backward_and_step_only_update_adapter() -> None:
         temporal_completion_loss_weight=1.,
         temporal_event_time_loss_weight=1.,
     )
+    with torch.no_grad():
+        model._transformer._decoder._null_task.zero_()
     frozen_before = {
         name: parameter.detach().clone()
         for name, parameter in model.named_parameters()

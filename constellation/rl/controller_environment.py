@@ -45,7 +45,16 @@ from constellation import TaskManager
 from constellation.callbacks.base import BaseCallback
 from constellation.callbacks import ComposedCallback
 from constellation.controller import Controller
-from constellation.rl.environment import Observation, null_observation, Padding
+from constellation.rl.environment import (
+    Observation,
+    Padding,
+    history_to_observation,
+    map_relative_actions_to_global,
+    null_observation,
+)
+from constellation.new_transformers.temporal_history import (
+    CausalAssignmentHistory,
+)
 
 from todd.runners import Memo
 
@@ -89,6 +98,34 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
                     low=-1e3,
                     high=1e3,
                     shape=(MAX_NUM_TASKS, TASK_DIM),
+                ),
+                previous_task_index=spaces.Box(
+                    low=-1,
+                    high=MAX_NUM_TASKS - 1,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.int32,
+                ),
+                previous_task_available=spaces.MultiBinary(
+                    MAX_NUM_SATELLITES,
+                ),
+                previous_was_idle=spaces.MultiBinary(MAX_NUM_SATELLITES),
+                run_length=spaces.Box(
+                    low=0,
+                    high=MAX_TIME_STEP,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
+                ),
+                switch_count_30=spaces.Box(
+                    low=0,
+                    high=30,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
+                ),
+                switch_count_60=spaces.Box(
+                    low=0,
+                    high=60,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
                 ),
             )
         )
@@ -172,6 +209,13 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         ) = self._load_constellation()
         _controller = self._require_controller()
         tasks_sensor_type, tasks_data = self._load_tasks()
+        candidate_global_task_ids = (
+            _controller.task_manager.ongoing_flags.nonzero().flatten().tolist()
+        )
+        temporal_observation = history_to_observation(
+            self._assignment_history,
+            candidate_global_task_ids,
+        )
 
         observation = Observation(
             num_satellites=_controller.environment.num_satellites,
@@ -188,6 +232,7 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
                 tasks_sensor_type - 1,
             ),
             tasks_data=tasks_data,
+            **temporal_observation,
         )
 
         return self._padding(observation)
@@ -246,6 +291,9 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
             task_manager=task_manager,
             callbacks=callbacks,
         )
+        self._assignment_history = CausalAssignmentHistory(
+            simulator.num_satellites,
+        )
 
         callbacks.before_run()
 
@@ -299,6 +347,15 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
     def _take_actions(self, task_ids: npt.NDArray[np.int32]) -> None:
         _controller = self._require_controller()
         tasks = _controller.task_manager.ongoing_tasks
+        candidate_global_task_ids = (
+            _controller.task_manager.ongoing_flags.nonzero().flatten().tolist()
+        )
+        task_ids = np.asarray(task_ids, dtype=np.int32)
+        task_ids = np.where(
+            (0 <= task_ids) & (task_ids < len(tasks)),
+            task_ids,
+            -1,
+        )
         constellation = _controller.environment.get_constellation()
         # print("Taking actions:", task_ids,
         #         "tasks available:", len(tasks),)
@@ -318,4 +375,8 @@ class ControllerEnvironment(gym.Env[Observation, npt.NDArray[np.uint16]]):
             for toggle, target_location in zip(toggles, target_locations)
         )
 
-        _controller.step(actions, task_ids)
+        _controller.step(actions, task_ids.tolist())
+        self._assignment_history.record(map_relative_actions_to_global(
+            task_ids,
+            candidate_global_task_ids,
+        ))

@@ -307,7 +307,7 @@ class TemporalAdapter(nn.Module):
         dtype: torch.dtype,
     ) -> torch.Tensor:
         matches = F.one_hot(
-            history.previous_task_indices.clamp_min(0),
+            history.previous_task_indices.clamp_min(0).long(),
             num_classes=num_tasks,
         ).to(dtype=dtype)
         return matches * history.previous_task_available.unsqueeze(-1)
