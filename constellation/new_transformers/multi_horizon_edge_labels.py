@@ -37,6 +37,34 @@ class ExecutedEdgeLabel:
     horizons: dict[int, HorizonEdgeOutcome]
 
 
+@dataclasses.dataclass(frozen=True)
+class HorizonOutcomeTensors:
+    """同一 horizon 下所有决策边的事实结果和 observed mask。"""
+
+    visible: torch.Tensor
+    visible_observed: torch.Tensor
+    progress: torch.Tensor
+    progress_observed: torch.Tensor
+    completed: torch.Tensor
+    completion_observed: torch.Tensor
+    time_to_first_visible: torch.Tensor
+    time_to_first_progress: torch.Tensor
+    time_to_completion: torch.Tensor
+
+
+@dataclasses.dataclass(frozen=True)
+class BatchedEdgeOutcomes:
+    """轨迹中 `0..T-2` 每颗卫星实际执行边的批量结果。"""
+
+    valid: torch.Tensor
+    run_lengths: torch.Tensor
+    duplicate_count: torch.Tensor
+    visible_next: torch.Tensor
+    progress_next: torch.Tensor
+    completed_next: torch.Tensor
+    horizons: dict[int, HorizonOutcomeTensors]
+
+
 def _validate_inputs(
     actions: torch.Tensor,
     is_visible: torch.Tensor,
@@ -272,14 +300,28 @@ def _run_lengths(actions: torch.Tensor) -> torch.Tensor:
     return lengths
 
 
-def _batched_outcomes(
+def build_batched_edge_outcomes(
     *,
     actions: torch.Tensor,
     is_visible: torch.Tensor,
     progress: torch.Tensor,
     task_durations: torch.Tensor,
     horizons: Sequence[int],
-) -> dict[str, Any]:
+) -> BatchedEdgeOutcomes:
+    """构造可直接用于训练的批量事实结果，未知窗口保持 censored。"""
+    _validate_inputs(actions, is_visible, progress, task_durations)
+    normalized_horizons = tuple(int(value) for value in horizons)
+    if not normalized_horizons or any(value <= 0 for value in normalized_horizons):
+        raise ValueError('horizons must be positive')
+    if len(set(normalized_horizons)) != len(normalized_horizons):
+        raise ValueError('horizons must be unique')
+    selected_task_ids = actions[actions >= 0]
+    if (
+        selected_task_ids.numel()
+        and int(selected_task_ids.max()) >= progress.shape[1]
+    ):
+        raise ValueError('action task ids do not align with trajectory tasks')
+
     num_times, num_satellites = actions.shape
     num_edges = num_times - 1
     selected = actions[:-1]
@@ -304,7 +346,7 @@ def _batched_outcomes(
     )
 
     horizon_values = {}
-    for horizon in horizons:
+    for horizon in normalized_horizons:
         first_visible = torch.zeros_like(selected)
         first_progress = torch.zeros_like(selected)
         first_completion = torch.zeros_like(selected)
@@ -354,66 +396,70 @@ def _batched_outcomes(
         visible_positive = first_visible > 0
         progress_positive = first_progress > 0
         completion_positive = first_completion > 0
-        horizon_values[str(horizon)] = {
-            'visible_observed': visible_positive | full_window,
-            'visible_positive': visible_positive,
-            'progress_observed': progress_positive | full_window,
-            'progress_positive': progress_positive,
-            'completion_observed': completion_positive | full_window,
-            'completion_positive': completion_positive,
-            'time_to_first_visible': first_visible,
-            'time_to_first_progress': first_progress,
-            'time_to_completion': first_completion,
-        }
-    return {
-        'valid': valid,
-        'run_lengths': run_lengths,
-        'duplicate_count': duplicate_count,
-        'visible_next': visible_next,
-        'progress_next': progress_next,
-        'completed_next': completed_next,
-        'horizons': horizon_values,
-    }
+        horizon_values[horizon] = HorizonOutcomeTensors(
+            visible=visible_positive,
+            visible_observed=visible_positive | full_window,
+            progress=progress_positive,
+            progress_observed=progress_positive | full_window,
+            completed=completion_positive,
+            completion_observed=completion_positive | full_window,
+            time_to_first_visible=first_visible,
+            time_to_first_progress=first_progress,
+            time_to_completion=first_completion,
+        )
+    return BatchedEdgeOutcomes(
+        valid=valid,
+        run_lengths=run_lengths,
+        duplicate_count=duplicate_count,
+        visible_next=visible_next,
+        progress_next=progress_next,
+        completed_next=completed_next,
+        horizons=horizon_values,
+    )
 
 
 def _counter_from_batched(
-    batched: dict[str, Any],
+    batched: BatchedEdgeOutcomes,
     *,
     mask: torch.Tensor,
     horizons: Sequence[int],
 ) -> dict[str, Any]:
     counter = _empty_counter(horizons)
-    duplicate = batched['duplicate_count'] > 1
+    duplicate = batched.duplicate_count > 1
     counter['edge_count'] = int(mask.sum())
     counter['visible_next_count'] = int(
-        (batched['visible_next'] & mask).sum()
+        (batched.visible_next & mask).sum()
     )
     counter['progress_next_count'] = int(
-        (batched['progress_next'] & mask).sum()
+        (batched.progress_next & mask).sum()
     )
     counter['completed_next_count'] = int(
-        (batched['completed_next'] & mask).sum()
+        (batched.completed_next & mask).sum()
     )
     counter['duplicate_edge_count'] = int((duplicate & mask).sum())
     counter['duplicate_no_visible_next_count'] = int(
-        (duplicate & ~batched['visible_next'] & mask).sum()
+        (duplicate & ~batched.visible_next & mask).sum()
     )
     for horizon in horizons:
-        source = batched['horizons'][str(horizon)]
+        source = batched.horizons[horizon]
         target = counter['horizons'][str(horizon)]
-        for outcome in ('visible', 'progress', 'completion'):
+        for outcome, observed_name, positive_name in (
+            ('visible', 'visible_observed', 'visible'),
+            ('progress', 'progress_observed', 'progress'),
+            ('completion', 'completion_observed', 'completed'),
+        ):
             target[f'{outcome}_observed_count'] = int(
-                (source[f'{outcome}_observed'] & mask).sum()
+                (getattr(source, observed_name) & mask).sum()
             )
             target[f'{outcome}_positive_count'] = int(
-                (source[f'{outcome}_positive'] & mask).sum()
+                (getattr(source, positive_name) & mask).sum()
             )
         for name in (
             'time_to_first_visible',
             'time_to_first_progress',
             'time_to_completion',
         ):
-            values = source[name]
+            values = getattr(source, name)
             positive = (values > 0) & mask
             target[f'{name}_sum'] = int(values[positive].sum())
             target[f'{name}_count'] = int(positive.sum())
@@ -434,16 +480,16 @@ def summarize_trajectory_edge_labels(
     selected = actions[actions >= 0]
     if selected.numel() and int(selected.max()) >= progress.shape[1]:
         raise ValueError('action task ids do not align with trajectory tasks')
-    batched = _batched_outcomes(
+    batched = build_batched_edge_outcomes(
         actions=actions,
         is_visible=is_visible,
         progress=progress,
         task_durations=task_durations,
         horizons=normalized_horizons,
     )
-    valid = batched['valid']
-    one_second = valid & (batched['run_lengths'] == 1)
-    duplicate = valid & (batched['duplicate_count'] > 1)
+    valid = batched.valid
+    one_second = valid & (batched.run_lengths == 1)
+    duplicate = valid & (batched.duplicate_count > 1)
     masks = {
         'all': valid,
         'one_second_run': one_second,
