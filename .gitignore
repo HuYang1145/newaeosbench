@@ -19,6 +19,7 @@ venv/
 .idea/
 .claude/settings.local.json
 .codex
+.worktrees/
 
 # Experiment data and generated outputs
 data/
