@@ -1,5 +1,7 @@
+import json
 from pathlib import Path
 
+import pytest
 import torch
 
 import constellation.new_transformers.multi_horizon_edge_labels as edge_labels
@@ -9,7 +11,10 @@ from constellation.new_transformers.multi_horizon_edge_labels import (
     label_executed_edge,
     summarize_trajectory_edge_labels,
 )
-from tools.audit_multi_horizon_edge_labels import taskset_path_for_trajectory
+from tools.audit_multi_horizon_edge_labels import (
+    annotation_targets,
+    taskset_path_for_trajectory,
+)
 
 
 def _trajectory(
@@ -214,6 +219,74 @@ def test_taskset_path_preserves_split_and_scene_subdirectory() -> None:
     )
 
     assert result == Path('/repo/data/tasksets/train/00/00007.json')
+
+
+def test_annotation_targets_follow_each_scene_epoch_route(
+    tmp_path: Path,
+) -> None:
+    annotation = tmp_path / 'stage3.json'
+    annotation.write_text(json.dumps({
+        'ids': [7, 1011],
+        'epochs': [1, 3],
+    }))
+    for epoch, id_ in ((1, 7), (3, 1011)):
+        trajectory = (
+            tmp_path / f'trajectories.{epoch}' / 'train'
+            / f'{id_ // 1000:02}' / f'{id_:05}.pth'
+        )
+        taskset = (
+            tmp_path / 'tasksets' / 'train'
+            / f'{id_ // 1000:02}' / f'{id_:05}.json'
+        )
+        trajectory.parent.mkdir(parents=True, exist_ok=True)
+        taskset.parent.mkdir(parents=True, exist_ok=True)
+        trajectory.touch()
+        taskset.write_text('[]')
+
+    targets = annotation_targets(
+        annotation,
+        split='train',
+        data_root=tmp_path,
+        taskset_root=tmp_path / 'tasksets',
+    )
+
+    assert [target.scene_id for target in targets] == [7, 1011]
+    assert [target.epoch for target in targets] == [1, 3]
+    assert targets[0].trajectory_path == (
+        tmp_path / 'trajectories.1/train/00/00007.pth'
+    )
+    assert targets[1].taskset_path == (
+        tmp_path / 'tasksets/train/01/01011.json'
+    )
+
+
+def test_annotation_targets_reject_duplicate_scene_ids(tmp_path: Path) -> None:
+    annotation = tmp_path / 'duplicates.json'
+    annotation.write_text(json.dumps({
+        'ids': [7, 7],
+        'epochs': [1, 2],
+    }))
+
+    with pytest.raises(ValueError, match='duplicate scene ids'):
+        annotation_targets(
+            annotation,
+            split='train',
+            data_root=tmp_path,
+            taskset_root=tmp_path / 'tasksets',
+        )
+
+
+def test_annotation_targets_report_missing_routed_files(tmp_path: Path) -> None:
+    annotation = tmp_path / 'missing.json'
+    annotation.write_text(json.dumps({'ids': [7], 'epochs': [3]}))
+
+    with pytest.raises(FileNotFoundError, match='trajectories.3'):
+        annotation_targets(
+            annotation,
+            split='train',
+            data_root=tmp_path,
+            taskset_root=tmp_path / 'tasksets',
+        )
 
 
 def test_trajectory_summary_does_not_relabel_every_edge(monkeypatch) -> None:
