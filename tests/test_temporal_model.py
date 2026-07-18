@@ -95,6 +95,17 @@ def _joint_batch() -> JointBatch:
     )
 
 
+def test_direct_model_initializes_null_task_to_zero() -> None:
+    model = Model(**_tiny_model_kwargs())
+
+    torch.testing.assert_close(
+        model._transformer._decoder._null_task,
+        torch.zeros(8),
+        rtol=0,
+        atol=0,
+    )
+
+
 def test_temporal_model_starts_with_exact_baseline_logits() -> None:
     baseline = Model(**_tiny_model_kwargs()).eval()
     temporal = Model(

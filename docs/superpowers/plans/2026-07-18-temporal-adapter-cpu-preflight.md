@@ -71,6 +71,17 @@
 - [x] 为 next 和各 horizon 分别接入训练集 `negative / positive` 权重，默认 `None` 时保持旧行为。
 - [x] 将 Stage3 全量计数固化到 P0-B 配置，运行定向测试并确认 GREEN。
 
+## Task 6: 修复最终回归暴露的 null task 未初始化问题
+
+**Files:**
+- Modify: `constellation/new_transformers/model.py`
+- Modify: `tests/test_temporal_model.py`
+
+- [x] 增加直接构造模型时 `_null_task` 必须为全零的失败测试。
+- [x] 确认 `torch.empty(width)` 导致未初始化值，并可能令 baseline 等价测试随机产生 NaN。
+- [x] 改为构造时零初始化，保持现有 `init_weights()` 与 checkpoint 加载语义不变。
+- [x] 运行定向测试与全量 CPU 回归并确认 GREEN。
+
 ## 2026-07-18 CPU 预检结果
 
 - Stage3 annotation：13,849 个唯一 scene；epoch 分布为 1: 3,596、2: 3,987、3: 6,266。
@@ -82,4 +93,4 @@
 - next-step completion 正样本率只有 0.335%，5 秒 completion 在 observed 样本中的正样本率只有 1.69%；已按全量训练集 `negative / positive` 接入独立正类权重。
 - 重复执行边占 67.51%，其中 93.19% 下一秒不可见；Temporal Adapter 可继续做 P0-B outcome 训练，但正式行为评估必须把重复冗余作为硬门槛，P0 本身不宣称解决跨卫星联合分配。
 - 13,849 是 Stage3 `tau_e` 筛选后的 annotation 数量，不等同于论文原始 train 16,218 条轨迹；论文对齐报告必须保留这一区别。
-- 最终 CPU 回归：`185 passed`；生产文件 `py_compile`、两个包装脚本 `bash -n`、`git diff --check` 均退出 0。
+- 最终 CPU 回归：`186 passed`；生产文件 `py_compile`、两个包装脚本 `bash -n`、`git diff --check` 均退出 0。

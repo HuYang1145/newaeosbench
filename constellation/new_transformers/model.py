@@ -200,7 +200,7 @@ class Decoder(InitWeightsMixin, nn.Module):
         self._norm = nn.LayerNorm(width)
 
         if return_logits:
-            self._null_task = nn.Parameter(torch.empty(width))
+            self._null_task = nn.Parameter(torch.zeros(width))
 
     @property
     def return_logits(self) -> bool:
