@@ -4,6 +4,7 @@ from constellation.new_transformers.temporal_adapter import (
     TemporalAdapter,
     TemporalAdapterOutput,
     TemporalHistoryTensors,
+    TemporalOutcomePositiveWeights,
     masked_binary_cross_entropy,
     temporal_outcome_loss,
 )
@@ -179,6 +180,22 @@ def test_masked_bce_all_censored_returns_differentiable_zero() -> None:
     torch.testing.assert_close(logits.grad, torch.zeros_like(logits))
 
 
+def test_masked_bce_applies_training_count_positive_weight() -> None:
+    logits = torch.zeros(2)
+    targets = torch.tensor([1., 0.])
+    observed = torch.ones(2, dtype=torch.bool)
+
+    unweighted = masked_binary_cross_entropy(logits, targets, observed)
+    weighted = masked_binary_cross_entropy(
+        logits,
+        targets,
+        observed,
+        positive_weight=torch.tensor(3.),
+    )
+
+    torch.testing.assert_close(weighted, 2 * unweighted)
+
+
 def test_zero_residual_layer_receives_gradient() -> None:
     adapter = TemporalAdapter(
         satellite_width=8,
@@ -256,6 +273,30 @@ def test_temporal_outcome_loss_ignores_censored_horizon_logit() -> None:
 
     torch.testing.assert_close(first_losses.visible, second_losses.visible)
     assert torch.isfinite(first_losses.event_time)
+
+
+def test_temporal_outcome_loss_uses_next_and_horizon_positive_weights() -> None:
+    output = _outcome_output(
+        torch.zeros(1, 2, 1, 1, requires_grad=True),
+    )
+    targets = _outcome_targets()
+    actions = torch.zeros(1, 2, dtype=torch.long)
+
+    unweighted = temporal_outcome_loss(output, targets, actions)
+    weighted = temporal_outcome_loss(
+        output,
+        targets,
+        actions,
+        positive_weights=TemporalOutcomePositiveWeights(
+            visible=torch.tensor([2., 3.]),
+            progress=torch.ones(2),
+            completion=torch.ones(2),
+        ),
+    )
+
+    assert weighted.visible > unweighted.visible
+    torch.testing.assert_close(weighted.progress, unweighted.progress)
+    torch.testing.assert_close(weighted.completion, unweighted.completion)
 
 
 def test_temporal_outcome_loss_returns_differentiable_zero_for_idle_batch() -> None:

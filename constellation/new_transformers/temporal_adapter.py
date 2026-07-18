@@ -14,6 +14,7 @@ __all__ = [
     'TemporalHistoryTensors',
     'TemporalAdapterOutput',
     'TemporalOutcomeLosses',
+    'TemporalOutcomePositiveWeights',
     'TemporalAdapter',
     'masked_binary_cross_entropy',
     'temporal_outcome_loss',
@@ -82,10 +83,19 @@ class TemporalOutcomeLosses(NamedTuple):
     event_time: torch.Tensor
 
 
+class TemporalOutcomePositiveWeights(NamedTuple):
+    """顺序为 next、随后各 horizon 的训练集负正样本比。"""
+
+    visible: torch.Tensor
+    progress: torch.Tensor
+    completion: torch.Tensor
+
+
 def masked_binary_cross_entropy(
     logits: torch.Tensor,
     targets: torch.Tensor,
     observed: torch.Tensor,
+    positive_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """只对事实已观测位置计算 BCE，全 censored 时返回可反传零。"""
     if logits.shape != targets.shape or logits.shape != observed.shape:
@@ -97,6 +107,14 @@ def masked_binary_cross_entropy(
         logits,
         targets.to(dtype=logits.dtype),
         reduction='none',
+        pos_weight=(
+            None
+            if positive_weight is None
+            else positive_weight.to(
+                device=logits.device,
+                dtype=logits.dtype,
+            )
+        ),
     )
     return losses[observed].mean()
 
@@ -130,6 +148,7 @@ def _classification_outcome_loss(
     horizon_observed: torch.Tensor,
     valid: torch.Tensor,
     actions_task_id: torch.Tensor,
+    positive_weights: torch.Tensor | None,
 ) -> torch.Tensor:
     executed_next = _gather_executed_edges(next_logits, actions_task_id)
     executed_horizons = _gather_executed_edges(
@@ -140,11 +159,21 @@ def _classification_outcome_loss(
         executed_next,
         next_targets,
         valid,
+        (
+            None
+            if positive_weights is None
+            else positive_weights[0]
+        ),
     )
     horizon_loss = masked_binary_cross_entropy(
         executed_horizons,
         horizon_targets,
         valid.unsqueeze(-1) & horizon_observed,
+        (
+            None
+            if positive_weights is None
+            else positive_weights[1:]
+        ),
     )
     return next_loss + horizon_loss
 
@@ -153,6 +182,7 @@ def temporal_outcome_loss(
     output: TemporalAdapterOutput,
     targets,
     actions_task_id: torch.Tensor,
+    positive_weights: TemporalOutcomePositiveWeights | None = None,
 ) -> TemporalOutcomeLosses:
     """计算实际执行边的 pointwise 结果损失，censored 不作负样本。"""
     if actions_task_id.ndim != 2:
@@ -162,6 +192,23 @@ def temporal_outcome_loss(
     if selected.numel() and int(selected.max()) >= num_tasks:
         raise ValueError('actions_task_id exceeds temporal task logits')
     valid = targets.outcome_valid.bool() & (actions_task_id >= 0)
+    if positive_weights is not None:
+        expected_shape = (1 + output.visible_logits.shape[-1],)
+        normalized = []
+        for name, values in positive_weights._asdict().items():
+            values = values.to(
+                device=output.visible_logits.device,
+                dtype=output.visible_logits.dtype,
+            )
+            if values.shape != expected_shape:
+                raise ValueError(
+                    f'{name} positive weights must have shape '
+                    f'{expected_shape}'
+                )
+            if not torch.isfinite(values).all() or (values <= 0).any():
+                raise ValueError('positive weights must be finite and positive')
+            normalized.append(values)
+        positive_weights = TemporalOutcomePositiveWeights(*normalized)
 
     visible = _classification_outcome_loss(
         next_logits=output.visible_next_logits,
@@ -171,6 +218,9 @@ def temporal_outcome_loss(
         horizon_observed=targets.visible_observed,
         valid=valid,
         actions_task_id=actions_task_id,
+        positive_weights=(
+            None if positive_weights is None else positive_weights.visible
+        ),
     )
     progress = _classification_outcome_loss(
         next_logits=output.progress_next_logits,
@@ -180,6 +230,9 @@ def temporal_outcome_loss(
         horizon_observed=targets.progress_observed,
         valid=valid,
         actions_task_id=actions_task_id,
+        positive_weights=(
+            None if positive_weights is None else positive_weights.progress
+        ),
     )
     completion = _classification_outcome_loss(
         next_logits=output.completed_next_logits,
@@ -189,6 +242,9 @@ def temporal_outcome_loss(
         horizon_observed=targets.completion_observed,
         valid=valid,
         actions_task_id=actions_task_id,
+        positive_weights=(
+            None if positive_weights is None else positive_weights.completion
+        ),
     )
 
     horizons = targets.horizons

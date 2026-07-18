@@ -28,6 +28,29 @@ model = {
     'temporal_progress_loss_weight': 1.0,
     'temporal_completion_loss_weight': 1.0,
     'temporal_event_time_loss_weight': 1.0,
+    # 2026-07-18 Stage3 annotation 全量审计得到的 neg/pos。
+    # 顺序：next, 5s, 15s, 30s, 300s。
+    'temporal_visible_positive_weights': (
+        12.876360,
+        9.997053,
+        7.347674,
+        5.074503,
+        0.451956,
+    ),
+    'temporal_progress_positive_weights': (
+        5.161846,
+        4.165305,
+        3.057156,
+        2.112248,
+        0.184455,
+    ),
+    'temporal_completion_positive_weights': (
+        297.349788,
+        58.149510,
+        18.465460,
+        8.562731,
+        0.376449,
+    ),
 }
 
 trainer = _deepcopy(_stage3_trainer)

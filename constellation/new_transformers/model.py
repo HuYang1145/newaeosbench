@@ -29,6 +29,7 @@ from .temporal_adapter import (
     TemporalAdapter,
     TemporalAdapterOutput,
     TemporalHistoryTensors,
+    TemporalOutcomePositiveWeights,
     temporal_outcome_loss,
 )
 
@@ -750,6 +751,9 @@ class JointModel(Model):
         temporal_progress_loss_weight: float = 0.0,
         temporal_completion_loss_weight: float = 0.0,
         temporal_event_time_loss_weight: float = 0.0,
+        temporal_visible_positive_weights: tuple[float, ...] | None = None,
+        temporal_progress_positive_weights: tuple[float, ...] | None = None,
+        temporal_completion_positive_weights: tuple[float, ...] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -783,6 +787,53 @@ class JointModel(Model):
         self._temporal_event_time_loss_weight = (
             temporal_event_time_loss_weight
         )
+        temporal_adapter = self._transformer._temporal_adapter
+        expected_positive_weights = (
+            None
+            if temporal_adapter is None
+            else 1 + len(temporal_adapter.horizons)
+        )
+        positive_weight_groups = (
+            ('temporal_visible_positive_weights',
+             temporal_visible_positive_weights),
+            ('temporal_progress_positive_weights',
+             temporal_progress_positive_weights),
+            ('temporal_completion_positive_weights',
+             temporal_completion_positive_weights),
+        )
+        provided_positive_weights = [
+            values is not None for _, values in positive_weight_groups
+        ]
+        if any(provided_positive_weights) and not all(
+            provided_positive_weights
+        ):
+            raise ValueError(
+                'temporal positive weights must provide visible, progress '
+                'and completion together'
+            )
+        for name, values in positive_weight_groups:
+            if values is not None and (
+                expected_positive_weights is None
+                or len(values) != expected_positive_weights
+                or any(
+                    not torch.isfinite(torch.tensor(value))
+                    or value <= 0
+                    for value in values
+                )
+            ):
+                raise ValueError(
+                    f'{name} must contain one positive value for next and '
+                    'each temporal horizon'
+                )
+            self.register_buffer(
+                f'_{name}',
+                (
+                    None
+                    if values is None
+                    else torch.tensor(values, dtype=torch.float)
+                ),
+                persistent=False,
+            )
         self._assignment_auxiliary_loss = AssignmentAuxiliaryLoss()
         if train_duration_head_only:
             self.requires_grad_(False)
@@ -871,6 +922,21 @@ class JointModel(Model):
                     temporal_output,
                     batch.temporal,
                     batch.actions_task_id,
+                    positive_weights=(
+                        None
+                        if self._temporal_visible_positive_weights is None
+                        else TemporalOutcomePositiveWeights(
+                            visible=(
+                                self._temporal_visible_positive_weights
+                            ),
+                            progress=(
+                                self._temporal_progress_positive_weights
+                            ),
+                            completion=(
+                                self._temporal_completion_positive_weights
+                            ),
+                        )
+                    ),
                 )
                 temporal_visible_loss = temporal_losses.visible
                 temporal_progress_loss = temporal_losses.progress

@@ -196,6 +196,9 @@ def test_temporal_joint_model_backward_and_step_only_update_adapter() -> None:
         temporal_progress_loss_weight=1.,
         temporal_completion_loss_weight=1.,
         temporal_event_time_loss_weight=1.,
+        temporal_visible_positive_weights=(2., 3.),
+        temporal_progress_positive_weights=(4., 5.),
+        temporal_completion_positive_weights=(6., 7.),
     )
     with torch.no_grad():
         model._transformer._decoder._null_task.zero_()
@@ -254,6 +257,27 @@ def test_temporal_adapter_pilot_config_freezes_stage3_backbone() -> None:
     assert model.temporal_progress_loss_weight == 1.0
     assert model.temporal_completion_loss_weight == 1.0
     assert model.temporal_event_time_loss_weight == 1.0
+    assert model.temporal_visible_positive_weights == (
+        12.876360,
+        9.997053,
+        7.347674,
+        5.074503,
+        0.451956,
+    )
+    assert model.temporal_progress_positive_weights == (
+        5.161846,
+        4.165305,
+        3.057156,
+        2.112248,
+        0.184455,
+    )
+    assert model.temporal_completion_positive_weights == (
+        297.349788,
+        58.149510,
+        18.465460,
+        8.562731,
+        0.376449,
+    )
     assert config.trainer.dataset.include_temporal_history is True
     assert config.validator.dataset.include_temporal_history is True
     assert config.trainer.dataset.annotation_file == (
