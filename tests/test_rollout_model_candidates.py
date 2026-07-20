@@ -31,6 +31,17 @@ class _PredictOnlyModel:
         return torch.tensor([[[0.0, 3.0, 2.0]]])
 
 
+class _IdlePredictModel:
+
+    def __init__(self):
+        self.calls = 0
+
+    def predict(self, *args):
+        del args
+        self.calls += 1
+        return torch.tensor([[[3.0, 2.0, 1.0]]])
+
+
 class _SingleSatelliteConstellation:
 
     def __len__(self):
@@ -163,6 +174,7 @@ def test_greedy_algorithm_exposes_current_logits_and_task_ids() -> None:
 def _event_algorithm(
     *,
     commitment_seconds: int = 5,
+    idle_commitment_seconds: int = 1,
 ) -> EventGreedyModelAlgorithm:
     algorithm = object.__new__(EventGreedyModelAlgorithm)
     algorithm._model = _PredictOnlyModel()
@@ -174,6 +186,7 @@ def _event_algorithm(
     algorithm._timer = SimpleNamespace(time=0)
     algorithm._runtime = EventActorRuntime(num_satellites=1)
     algorithm._event_commitment_seconds = commitment_seconds
+    algorithm._event_idle_commitment_seconds = idle_commitment_seconds
     algorithm.model_call_count = 0
     algorithm.event_history = []
     return algorithm
@@ -226,6 +239,59 @@ def test_event_actor_replans_when_committed_task_disappears() -> None:
     assert assignment == [44]
     assert algorithm.model_call_count == 2
     assert algorithm.event_history[-1]['trigger'] == 'task_unavailable'
+
+
+def test_event_actor_holds_idle_until_taskset_changes() -> None:
+    algorithm = _event_algorithm(
+        commitment_seconds=5,
+        idle_commitment_seconds=5,
+    )
+    algorithm._model = _IdlePredictModel()
+
+    _, first = algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+    algorithm._timer.time = 1
+    _, second = algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+
+    assert first == second == [-1]
+    assert algorithm.model_call_count == 1
+
+    algorithm._timer.time = 2
+    algorithm.step(
+        _replacement_candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+
+    assert algorithm.model_call_count == 2
+    assert algorithm.event_history[-1]['trigger'] == 'taskset_changed'
+
+
+def test_event_actor_keeps_idle_responsive_by_default() -> None:
+    algorithm = _event_algorithm(commitment_seconds=5)
+    algorithm._model = _IdlePredictModel()
+
+    algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+    algorithm._timer.time = 1
+    algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+
+    assert algorithm.model_call_count == 2
+    assert algorithm.event_history[-1]['commitment_seconds'] == 1
 
 
 def test_actions_from_assignment_preserves_global_task_identity() -> None:
@@ -298,6 +364,15 @@ def test_event_options_reject_commitment_when_disabled() -> None:
         validate_event_options(
             event_actor=False,
             event_commitment_seconds=5,
+        )
+
+
+def test_event_options_reject_idle_commitment_when_disabled() -> None:
+    with pytest.raises(ValueError, match='requires --event-actor'):
+        validate_event_options(
+            event_actor=False,
+            event_commitment_seconds=None,
+            event_idle_commitment_seconds=5,
         )
 
 

@@ -34,8 +34,6 @@ class EventDecision:
             )
         if self.task_id < -1:
             raise ValueError('task_id must be -1 or a non-negative id')
-        if self.task_id == -1 and self.commitment_seconds != 1:
-            raise ValueError('idle action must use a one-second commitment')
 
 
 @dataclasses.dataclass

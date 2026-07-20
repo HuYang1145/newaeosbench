@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 from constellation.new_transformers.event_action import EventDecision
 from constellation.new_transformers.event_policy import EventActorRuntime
@@ -86,3 +87,32 @@ def test_runtime_rejects_incomplete_planner_output() -> None:
 
     with pytest.raises(ValueError, match='one decision per satellite'):
         runtime.update(time=0, ongoing_task_ids={7}, planner=planner)
+
+
+def test_runtime_can_force_idle_replan_on_taskset_event() -> None:
+    runtime = EventActorRuntime(num_satellites=1)
+    planner_calls = 0
+
+    def planner(active, previous):
+        nonlocal planner_calls
+        del active, previous
+        planner_calls += 1
+        if planner_calls == 1:
+            return [EventDecision(-1, 5)]
+        return [EventDecision(7, 5)]
+
+    runtime.update(time=0, ongoing_task_ids=set(), planner=planner)
+    assert runtime.update(
+        time=1,
+        ongoing_task_ids=set(),
+        planner=planner,
+    ) == [-1]
+    assert planner_calls == 1
+
+    assert runtime.update(
+        time=2,
+        ongoing_task_ids={7},
+        planner=planner,
+        force_replan_mask=torch.tensor([True]),
+    ) == [7]
+    assert planner_calls == 2

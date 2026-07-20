@@ -29,11 +29,26 @@ class EventActorRuntime:
         time: int,
         ongoing_task_ids: Iterable[int],
         planner: EventPlanner,
+        force_replan_mask: torch.Tensor | None = None,
     ) -> list[int]:
         replans = self.state.advance(
             time=time,
             ongoing_task_ids=ongoing_task_ids,
         )
+        if force_replan_mask is not None:
+            if force_replan_mask.shape != (self.state.num_satellites,):
+                raise ValueError(
+                    'force_replan_mask must contain every satellite'
+                )
+            if force_replan_mask.dtype != torch.bool:
+                raise TypeError('force_replan_mask must be boolean')
+            replans = [
+                should_replan or bool(force)
+                for should_replan, force in zip(
+                    replans,
+                    force_replan_mask.tolist(),
+                )
+            ]
         if not any(replans):
             return self.state.assignment()
 

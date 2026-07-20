@@ -66,6 +66,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         choices=ALLOWED_EVENT_COMMITMENTS,
     )
+    parser.add_argument(
+        '--event-idle-commitment-seconds',
+        type=int,
+        choices=ALLOWED_EVENT_COMMITMENTS,
+        default=1,
+    )
     return parser.parse_args()
 
 
@@ -138,6 +144,7 @@ def validate_event_options(
     *,
     event_actor: bool,
     event_commitment_seconds: int | None,
+    event_idle_commitment_seconds: int = 1,
 ) -> None:
     if event_actor and event_commitment_seconds is None:
         raise ValueError(
@@ -147,12 +154,21 @@ def validate_event_options(
         raise ValueError(
             '--event-commitment-seconds requires --event-actor'
         )
+    if not event_actor and event_idle_commitment_seconds != 1:
+        raise ValueError(
+            '--event-idle-commitment-seconds requires --event-actor'
+        )
     if (
         event_commitment_seconds is not None
         and event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS
     ):
         raise ValueError(
             'event commitment must be one of '
+            f'{ALLOWED_EVENT_COMMITMENTS}'
+        )
+    if event_idle_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS:
+        raise ValueError(
+            'idle event commitment must be one of '
             f'{ALLOWED_EVENT_COMMITMENTS}'
         )
 
@@ -395,6 +411,7 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
         self,
         *args,
         event_commitment_seconds: int,
+        event_idle_commitment_seconds: int = 1,
         **kwargs,
     ) -> None:
         if event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS:
@@ -402,9 +419,18 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                 'event_commitment_seconds must be one of '
                 f'{ALLOWED_EVENT_COMMITMENTS}'
             )
+        if event_idle_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS:
+            raise ValueError(
+                'event_idle_commitment_seconds must be one of '
+                f'{ALLOWED_EVENT_COMMITMENTS}'
+            )
         super().__init__(*args, **kwargs)
         self._event_commitment_seconds = event_commitment_seconds
+        self._event_idle_commitment_seconds = (
+            event_idle_commitment_seconds
+        )
         self._runtime: EventActorRuntime | None = None
+        self._last_ongoing_task_ids: frozenset[int] | None = None
         self.model_call_count = 0
         self.event_history: list[dict[str, int | str]] = []
 
@@ -433,6 +459,21 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
         }
         state = self._runtime.state
         previous_start_times = state.start_times.clone()
+        previous_taskset = getattr(
+            self,
+            '_last_ongoing_task_ids',
+            None,
+        )
+        taskset_changed = (
+            previous_taskset is not None
+            and ongoing_task_ids != previous_taskset
+        )
+        force_replan_mask = torch.zeros(
+            state.num_satellites,
+            dtype=torch.bool,
+        )
+        if taskset_changed:
+            force_replan_mask = state.task_ids == -1
         triggers: list[str] = []
         for satellite_index, task_id in enumerate(state.assignment()):
             last_update = int(state.last_update_times[satellite_index])
@@ -440,6 +481,8 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                 triggers.append('initial')
             elif task_id >= 0 and task_id not in ongoing_task_ids:
                 triggers.append('task_unavailable')
+            elif bool(force_replan_mask[satellite_index]):
+                triggers.append('taskset_changed')
             else:
                 triggers.append('expired')
 
@@ -460,7 +503,7 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                 EventDecision(
                     task_id=int(task_id),
                     commitment_seconds=(
-                        1
+                        self._event_idle_commitment_seconds
                         if int(task_id) == -1
                         else self._event_commitment_seconds
                     ),
@@ -472,7 +515,9 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
             time=time,
             ongoing_task_ids=ongoing_task_ids,
             planner=planner,
+            force_replan_mask=force_replan_mask,
         )
+        self._last_ongoing_task_ids = frozenset(ongoing_task_ids)
         for satellite_index, start_time in enumerate(
             state.start_times.tolist()
         ):
@@ -522,6 +567,7 @@ def rollout_one(
     seed: int = 3407,
     event_actor: bool = False,
     event_commitment_seconds: int | None = None,
+    event_idle_commitment_seconds: int = 1,
 ) -> None:
     trajectory_dir = output_root / split / f'{id_ // 1000:02}'
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -578,6 +624,7 @@ def rollout_one(
         algorithm: GreedyModelAlgorithm = EventGreedyModelAlgorithm(
             **common_algorithm_kwargs,
             event_commitment_seconds=event_commitment_seconds,
+            event_idle_commitment_seconds=event_idle_commitment_seconds,
         )
     else:
         algorithm = GreedyModelAlgorithm(**common_algorithm_kwargs)
@@ -602,6 +649,7 @@ def main() -> None:
     validate_event_options(
         event_actor=args.event_actor,
         event_commitment_seconds=args.event_commitment_seconds,
+        event_idle_commitment_seconds=args.event_idle_commitment_seconds,
     )
     annotation_path = args.annotation_file
     if annotation_path is None:
@@ -632,6 +680,9 @@ def main() -> None:
             'seed': args.seed,
             'event_actor': args.event_actor,
             'event_commitment_seconds': args.event_commitment_seconds,
+            'event_idle_commitment_seconds': (
+                args.event_idle_commitment_seconds
+            ),
         },
         rank=rank,
     )
@@ -653,6 +704,9 @@ def main() -> None:
             seed=args.seed,
             event_actor=args.event_actor,
             event_commitment_seconds=args.event_commitment_seconds,
+            event_idle_commitment_seconds=(
+                args.event_idle_commitment_seconds
+            ),
         )
 
 

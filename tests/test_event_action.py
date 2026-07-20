@@ -61,9 +61,11 @@ def test_event_decision_rejects_unsupported_duration(duration: int) -> None:
         EventDecision(task_id=3, commitment_seconds=duration)
 
 
-def test_event_decision_requires_one_second_idle() -> None:
-    with pytest.raises(ValueError, match='idle action'):
-        EventDecision(task_id=-1, commitment_seconds=5)
+def test_event_decision_allows_bounded_idle_commitment() -> None:
+    decision = EventDecision(task_id=-1, commitment_seconds=5)
+
+    assert decision.task_id == -1
+    assert decision.commitment_seconds == 5
 
 
 def test_event_state_rejects_time_regression() -> None:
