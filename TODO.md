@@ -192,14 +192,19 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
   `work_dirs/eval_logs/temporal_adapter_p0_10k_train.log`；输出目录：
   `work_dirs/temporal_adapter_p0_10k/`；最终 checkpoint：
   `work_dirs/temporal_adapter_p0_10k/checkpoints/iter_10000/model.pth`。
-- 下一步仅通过 Slurm 运行 Val Seen/Unseen 各 8 场：包装脚本
+- 已通过 Slurm 运行 Val Seen/Unseen 各 8 场：包装脚本
   `scripts/eval_temporal_adapter_p0_8_slurm.sh`，账户 `lab_team`，申请
   `1 GPU / 24 CPU / 96G / 2h`；不再直接占用本机 GPU。
-- 管理员开放 `local-10` 后，Slurm job `493` 已提交到 `server-10`；日志：
+- Slurm job `493` 已在 `local-10/server-10` 完成，`ExitCode=0:0`，耗时
+  `00:35:36`；日志：
   `work_dirs/eval_logs/temporal_adapter_p0_eval8_slurm_493.log`。
 - job `492` 因 Slurm spool 中的脚本无法按 `BASH_SOURCE` 找到代码目录而退出；
   已在提交 `7bb993c` 中改为优先使用 `SLURM_SUBMIT_DIR`，job `493` 已正常加载
-  Temporal Adapter checkpoint 并开始 Val Seen。
+  Temporal Adapter checkpoint 并完成评估。
+- 8+8 汇总：`work_dirs/eval_summaries/temporal_adapter_p0_10k_val8.json`。
+- 同场景对照中，Val Seen/Unseen 的 `CS_paper` 分别由 Stage3 baseline 的
+  `4.2255/4.1632` 恶化到 `4.2994/4.2372`；两个 split 均未通过，不运行
+  64+64 Val 或 Test。
 - P0 第一阶段训练已在 `server-10` 直接完成，不经过 Slurm；`groupA/groupB` 权限
   不影响本机实验。
 - 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；最终 checkpoint：
