@@ -195,6 +195,9 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 - 下一步仅通过 Slurm 运行 Val Seen/Unseen 各 8 场：包装脚本
   `scripts/eval_temporal_adapter_p0_8_slurm.sh`，账户 `lab_team`，申请
   `1 GPU / 24 CPU / 96G / 2h`；不再直接占用本机 GPU。
+- 2026-07-20 执行
+  `sbatch --test-only scripts/eval_temporal_adapter_p0_8_slurm.sh`，控制器返回
+  `User's group not permitted to use this partition`，尚未生成 Slurm job ID。
 - P0 第一阶段训练已在 `server-10` 直接完成，不经过 Slurm；`groupA/groupB` 权限
   不影响本机实验。
 - 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；最终 checkpoint：
