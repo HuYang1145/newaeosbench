@@ -8,6 +8,9 @@ import torch
 from constellation.data import Coordinate, Task, TaskSet
 from constellation.data.constellations import SensorType
 from constellation.new_transformers.event_policy import EventActorRuntime
+from constellation.new_transformers.temporal_history import (
+    CausalAssignmentHistory,
+)
 from tools.rollout_model_trajectories import (
     EventGreedyModelAlgorithm,
     GreedyModelAlgorithm,
@@ -40,6 +43,31 @@ class _IdlePredictModel:
         del args
         self.calls += 1
         return torch.tensor([[[3.0, 2.0, 1.0]]])
+
+
+class _LearnedEventModel:
+
+    def __init__(self):
+        self.calls = 0
+
+    def _predict_with_temporal_output(
+        self,
+        *args,
+        temporal_history,
+    ):
+        del args
+        self.calls += 1
+        assert temporal_history.run_lengths.tolist() == [[0]]
+        output = SimpleNamespace(
+            continue_logits=torch.tensor([[[3.0, -3.0]]]),
+            duration_logits=torch.tensor([[
+                [
+                    [0.0, 0.0, 5.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 5.0],
+                ],
+            ]]),
+        )
+        return torch.tensor([[[0.0, 3.0, 2.0]]]), output
 
 
 class _SingleSatelliteConstellation:
@@ -183,10 +211,14 @@ def _event_algorithm(
     algorithm._top_k = 3
     algorithm._temperature = 0.7
     algorithm._generator = torch.Generator().manual_seed(1)
+    algorithm._device = torch.device('cpu')
     algorithm._timer = SimpleNamespace(time=0)
     algorithm._runtime = EventActorRuntime(num_satellites=1)
     algorithm._event_commitment_seconds = commitment_seconds
     algorithm._event_idle_commitment_seconds = idle_commitment_seconds
+    algorithm._learned_event_commitment = False
+    algorithm._event_continue_threshold = 0.5
+    algorithm._causal_history = CausalAssignmentHistory(num_satellites=1)
     algorithm.model_call_count = 0
     algorithm.event_history = []
     return algorithm
@@ -294,6 +326,33 @@ def test_event_actor_keeps_idle_responsive_by_default() -> None:
     assert algorithm.event_history[-1]['commitment_seconds'] == 1
 
 
+def test_event_actor_uses_learned_commitment_for_selected_task() -> None:
+    algorithm = _event_algorithm()
+    algorithm._model = _LearnedEventModel()
+    algorithm._learned_event_commitment = True
+    algorithm._event_commitment_seconds = None
+
+    _, assignment = algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+    algorithm._timer.time = 1
+    algorithm.step(
+        _candidate_tasks(),
+        _SingleSatelliteConstellation(),
+        torch.eye(3),
+    )
+
+    assert assignment == [31]
+    assert algorithm._model.calls == 1
+    assert algorithm.event_history[0]['commitment_seconds'] == 15
+    assert algorithm.event_history[0]['duration_proposal_seconds'] == 15
+    assert algorithm.event_history[0]['continue_probability'] == pytest.approx(
+        torch.sigmoid(torch.tensor(3.0)).item()
+    )
+
+
 def test_actions_from_assignment_preserves_global_task_identity() -> None:
     actions = actions_from_assignment(
         assignment=[44],
@@ -356,6 +415,29 @@ def test_event_options_require_explicit_commitment() -> None:
         validate_event_options(
             event_actor=True,
             event_commitment_seconds=None,
+        )
+
+
+def test_event_options_allow_exactly_one_learned_commitment_mode() -> None:
+    validate_event_options(
+        event_actor=True,
+        event_commitment_seconds=None,
+        event_learned_commitment=True,
+    )
+    with pytest.raises(ValueError, match='exactly one'):
+        validate_event_options(
+            event_actor=True,
+            event_commitment_seconds=5,
+            event_learned_commitment=True,
+        )
+
+
+def test_event_options_reject_learned_commitment_when_disabled() -> None:
+    with pytest.raises(ValueError, match='requires --event-actor'):
+        validate_event_options(
+            event_actor=False,
+            event_commitment_seconds=None,
+            event_learned_commitment=True,
         )
 
 

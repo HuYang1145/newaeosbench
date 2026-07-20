@@ -1,9 +1,11 @@
 import pytest
+import torch
 
 from constellation.new_transformers.event_action import (
     ALLOWED_EVENT_COMMITMENTS,
     EventAssignmentState,
     EventDecision,
+    select_learned_event_commitments,
 )
 
 
@@ -82,3 +84,46 @@ def test_event_state_rejects_time_regression() -> None:
 def test_event_state_requires_positive_satellite_count() -> None:
     with pytest.raises(ValueError, match='num_satellites'):
         EventAssignmentState.empty(num_satellites=0)
+
+
+def test_learned_commitment_uses_selected_edge_and_continue_gate() -> None:
+    continue_logits = torch.tensor([
+        [-3.0, 3.0],
+        [-3.0, 3.0],
+        [3.0, 3.0],
+    ])
+    duration_logits = torch.zeros(3, 2, 5)
+    duration_logits[0, 1, 3] = 5.0
+    duration_logits[1, 0, 4] = 5.0
+
+    selected = select_learned_event_commitments(
+        relative_task_ids=torch.tensor([1, 0, -1]),
+        continue_logits=continue_logits,
+        duration_logits=duration_logits,
+        continue_threshold=0.5,
+    )
+
+    assert selected.task_selected.tolist() == [True, True, False]
+    assert selected.duration_proposals.tolist() == [30, 60, 1]
+    assert selected.commitment_seconds.tolist() == [30, 1, 1]
+    assert selected.continue_probabilities[:2].tolist() == pytest.approx([
+        torch.sigmoid(torch.tensor(3.0)).item(),
+        torch.sigmoid(torch.tensor(-3.0)).item(),
+    ])
+
+
+def test_learned_commitment_rejects_bad_shapes_and_threshold() -> None:
+    with pytest.raises(ValueError, match='threshold'):
+        select_learned_event_commitments(
+            relative_task_ids=torch.tensor([0]),
+            continue_logits=torch.zeros(1, 1),
+            duration_logits=torch.zeros(1, 1, 5),
+            continue_threshold=1.0,
+        )
+    with pytest.raises(ValueError, match='duration'):
+        select_learned_event_commitments(
+            relative_task_ids=torch.tensor([0]),
+            continue_logits=torch.zeros(1, 1),
+            duration_logits=torch.zeros(1, 1, 4),
+            continue_threshold=0.5,
+        )

@@ -32,3 +32,21 @@ def test_event_actor_val_wrapper_uses_slurm_and_never_test_split() -> None:
     assert '--event-actor' in script
     assert '--event-idle-commitment-seconds 1' in script
     assert '--split test' not in script
+
+
+def test_m2_learned_event_smoke_uses_10k_checkpoint_and_slurm() -> None:
+    script = (
+        ROOT / 'scripts' / 'run_event_actor_m2_smoke_slurm.sh'
+    ).read_text(encoding='utf-8')
+
+    assert '#SBATCH --account=lab_team' in script
+    assert '#SBATCH --partition=local-10' in script
+    assert 'event_heads_m2_10k/checkpoints/iter_10000/model.pth' in script
+    assert '--event-actor' in script
+    assert '--event-learned-commitment' in script
+    assert '--event-continue-threshold 0.5' in script
+    assert '--event-idle-commitment-seconds 1' in script
+    assert '--split train' in script
+    assert '--limit 1' in script
+    assert '--device cpu' in script
+    assert '--split test' not in script

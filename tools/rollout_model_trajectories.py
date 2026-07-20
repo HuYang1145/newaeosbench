@@ -35,8 +35,16 @@ from constellation.new_transformers import Model, Statistics
 from constellation.new_transformers.event_action import (
     ALLOWED_EVENT_COMMITMENTS,
     EventDecision,
+    LearnedEventCommitments,
+    select_learned_event_commitments,
 )
 from constellation.new_transformers.event_policy import EventActorRuntime
+from constellation.new_transformers.temporal_adapter import (
+    TemporalHistoryTensors,
+)
+from constellation.new_transformers.temporal_history import (
+    CausalAssignmentHistory,
+)
 from constellation.task_managers import TaskManager
 
 
@@ -71,6 +79,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         choices=ALLOWED_EVENT_COMMITMENTS,
         default=1,
+    )
+    parser.add_argument(
+        '--event-learned-commitment',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--event-continue-threshold',
+        type=float,
+        default=0.5,
     )
     return parser.parse_args()
 
@@ -145,10 +162,12 @@ def validate_event_options(
     event_actor: bool,
     event_commitment_seconds: int | None,
     event_idle_commitment_seconds: int = 1,
+    event_learned_commitment: bool = False,
+    event_continue_threshold: float = 0.5,
 ) -> None:
-    if event_actor and event_commitment_seconds is None:
+    if not event_actor and event_learned_commitment:
         raise ValueError(
-            '--event-actor requires --event-commitment-seconds'
+            '--event-learned-commitment requires --event-actor'
         )
     if not event_actor and event_commitment_seconds is not None:
         raise ValueError(
@@ -157,6 +176,14 @@ def validate_event_options(
     if not event_actor and event_idle_commitment_seconds != 1:
         raise ValueError(
             '--event-idle-commitment-seconds requires --event-actor'
+        )
+    commitment_modes = int(event_commitment_seconds is not None) + int(
+        event_learned_commitment
+    )
+    if event_actor and commitment_modes != 1:
+        raise ValueError(
+            '--event-actor requires exactly one of '
+            '--event-commitment-seconds or --event-learned-commitment'
         )
     if (
         event_commitment_seconds is not None
@@ -171,6 +198,8 @@ def validate_event_options(
             'idle event commitment must be one of '
             f'{ALLOWED_EVENT_COMMITMENTS}'
         )
+    if not 0 < event_continue_threshold < 1:
+        raise ValueError('event continue threshold must be in (0, 1)')
 
 
 def actions_from_assignment(
@@ -203,7 +232,7 @@ def actions_from_assignment(
 
 
 def summarize_event_history(
-    history: list[dict[str, int | str]],
+    history: list[dict[str, object]],
 ) -> dict[str, object]:
     """汇总事件承诺，任务动作与 idle 分开统计。"""
 
@@ -230,7 +259,7 @@ def summarize_event_history(
 
     count = len(durations)
     task_count = len(task_durations)
-    return {
+    summary: dict[str, object] = {
         'commitment_count': count,
         'one_second_commitment_rate': (
             0.0 if count == 0 else duration_counts.get('1', 0) / count
@@ -253,6 +282,28 @@ def summarize_event_history(
         'task_duration_counts': task_duration_counts,
         'trigger_counts': trigger_counts,
     }
+    learned = [
+        item for item in history
+        if 'continue_probability' in item
+    ]
+    if learned:
+        probabilities = [
+            float(item['continue_probability']) for item in learned
+        ]
+        proposals = [
+            int(item['duration_proposal_seconds']) for item in learned
+        ]
+        summary.update({
+            'learned_event_count': len(learned),
+            'mean_continue_probability': (
+                sum(probabilities) / len(probabilities)
+            ),
+            'predicted_continue_rate': sum(
+                bool(item['continue_selected']) for item in learned
+            ) / len(learned),
+            'duration_proposal_counts': counts(proposals),
+        })
+    return summary
 
 
 def write_rollout_metadata(
@@ -281,6 +332,7 @@ class GreedyModelAlgorithm(BaseAlgorithm):
         top_k: int = 3,
         temperature: float = 0.7,
         seed: int = 3407,
+        model_kwargs: dict[str, object] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -291,7 +343,7 @@ class GreedyModelAlgorithm(BaseAlgorithm):
         self._temperature = temperature
         self._generator = torch.Generator(device=device).manual_seed(seed)
 
-        model = Model()
+        model = Model(**({} if model_kwargs is None else model_kwargs))
         missing = model.load_state_dict(
             load_state_dict(checkpoint),
             strict=False,
@@ -405,16 +457,27 @@ class GreedyModelAlgorithm(BaseAlgorithm):
 
 
 class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
-    """按固定非空承诺运行冻结 Stage3，只在事件发生时重规划。"""
+    """使用固定或 M2 学习承诺，只在事件发生时重规划。"""
 
     def __init__(
         self,
         *args,
-        event_commitment_seconds: int,
+        event_commitment_seconds: int | None,
         event_idle_commitment_seconds: int = 1,
+        learned_event_commitment: bool = False,
+        event_continue_threshold: float = 0.5,
         **kwargs,
     ) -> None:
-        if event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS:
+        if learned_event_commitment == (
+            event_commitment_seconds is not None
+        ):
+            raise ValueError(
+                'exactly one fixed or learned event commitment is required'
+            )
+        if (
+            event_commitment_seconds is not None
+            and event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS
+        ):
             raise ValueError(
                 'event_commitment_seconds must be one of '
                 f'{ALLOWED_EVENT_COMMITMENTS}'
@@ -424,15 +487,32 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                 'event_idle_commitment_seconds must be one of '
                 f'{ALLOWED_EVENT_COMMITMENTS}'
             )
+        if not 0 < event_continue_threshold < 1:
+            raise ValueError('event_continue_threshold must be in (0, 1)')
+        if learned_event_commitment:
+            if 'model_kwargs' in kwargs:
+                raise ValueError(
+                    'learned event commitment owns the model configuration'
+                )
+            kwargs['model_kwargs'] = {
+                'use_sdpa': True,
+                'use_temporal_adapter': True,
+                'temporal_adapter_hidden_width': 64,
+                'temporal_horizons': (5, 15, 30, 60),
+                'temporal_residual_scale': 0.0,
+            }
         super().__init__(*args, **kwargs)
         self._event_commitment_seconds = event_commitment_seconds
         self._event_idle_commitment_seconds = (
             event_idle_commitment_seconds
         )
+        self._learned_event_commitment = learned_event_commitment
+        self._event_continue_threshold = event_continue_threshold
         self._runtime: EventActorRuntime | None = None
+        self._causal_history: CausalAssignmentHistory | None = None
         self._last_ongoing_task_ids: frozenset[int] | None = None
         self.model_call_count = 0
-        self.event_history: list[dict[str, int | str]] = []
+        self.event_history: list[dict[str, object]] = []
 
     def prepare(
         self,
@@ -443,6 +523,64 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
         self._runtime = EventActorRuntime(
             num_satellites=len(environment.get_constellation())
         )
+        self._causal_history = CausalAssignmentHistory(
+            num_satellites=len(environment.get_constellation())
+        )
+
+    def _online_temporal_history(
+        self,
+        taskset: TaskSet[Task],
+    ) -> TemporalHistoryTensors:
+        if self._causal_history is None:
+            raise RuntimeError('causal history must be prepared')
+        snapshot = self._causal_history.snapshot(taskset.ids.tolist())
+        return TemporalHistoryTensors(
+            previous_task_indices=(
+                snapshot.previous_task_indices.to(self._device)
+            ),
+            previous_task_available=(
+                snapshot.previous_task_available.to(self._device)
+            ),
+            previous_was_idle=snapshot.previous_was_idle.to(self._device),
+            run_lengths=snapshot.run_lengths.to(self._device),
+            switch_count_30=snapshot.switch_count_30.to(self._device),
+            switch_count_60=snapshot.switch_count_60.to(self._device),
+        )
+
+    def _learned_plan(
+        self,
+        taskset: TaskSet[Task],
+        constellation: Constellation,
+    ) -> tuple[list[int], LearnedEventCommitments]:
+        with torch.inference_mode():
+            logits, temporal_output = self._model._predict_with_temporal_output(
+                *self._build_inputs(taskset, constellation),
+                temporal_history=self._online_temporal_history(taskset),
+            )
+        if temporal_output is None:
+            raise RuntimeError('M2 checkpoint did not produce event heads')
+        self.last_logits = logits.detach().cpu()
+        self.last_task_ids = taskset.ids.detach().cpu().clone()
+        relative_task_ids = select_action_indices(
+            logits,
+            strategy=self._strategy,
+            top_k=self._top_k,
+            temperature=self._temperature,
+            generator=self._generator,
+        ).squeeze(0) - 1
+        task_ids = taskset.ids.to(relative_task_ids.device)
+        assignment = torch.where(
+            relative_task_ids >= 0,
+            task_ids[relative_task_ids.clamp_min(0)],
+            -1,
+        ).tolist()
+        learned = select_learned_event_commitments(
+            relative_task_ids=relative_task_ids,
+            continue_logits=temporal_output.continue_logits.squeeze(0),
+            duration_logits=temporal_output.duration_logits.squeeze(0),
+            continue_threshold=self._event_continue_threshold,
+        )
+        return assignment, learned
 
     def step(
         self,
@@ -450,7 +588,7 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
         constellation: Constellation,
         earth_rotation: torch.Tensor,
     ) -> tuple[Actions, list[int]]:
-        if self._runtime is None:
+        if self._runtime is None or self._causal_history is None:
             raise RuntimeError('algorithm must be prepared before step')
 
         time = int(self._timer.time)
@@ -486,17 +624,51 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
             else:
                 triggers.append('expired')
 
+        learned_metadata: dict[int, dict[str, object]] = {}
+
         def planner(
             active_commitments: torch.Tensor,
             previous_task_ids: torch.Tensor,
         ) -> list[EventDecision]:
             del active_commitments, previous_task_ids
-            _, assignment = GreedyModelAlgorithm.step(
-                self,
-                taskset,
-                constellation,
-                earth_rotation,
-            )
+            if self._learned_event_commitment and len(taskset) > 0:
+                assignment, learned = self._learned_plan(
+                    taskset,
+                    constellation,
+                )
+                commitments = learned.commitment_seconds.tolist()
+                for satellite_index, task_selected in enumerate(
+                    learned.task_selected.tolist()
+                ):
+                    if not task_selected:
+                        continue
+                    probability = float(
+                        learned.continue_probabilities[satellite_index]
+                    )
+                    learned_metadata[satellite_index] = {
+                        'continue_probability': probability,
+                        'continue_selected': (
+                            probability >= self._event_continue_threshold
+                        ),
+                        'duration_proposal_seconds': int(
+                            learned.duration_proposals[satellite_index]
+                        ),
+                    }
+            else:
+                _, assignment = GreedyModelAlgorithm.step(
+                    self,
+                    taskset,
+                    constellation,
+                    earth_rotation,
+                )
+                commitments = [
+                    (
+                        self._event_idle_commitment_seconds
+                        if int(task_id) == -1
+                        else self._event_commitment_seconds
+                    )
+                    for task_id in assignment
+                ]
             if len(taskset) > 0:
                 self.model_call_count += 1
             return [
@@ -505,10 +677,10 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                     commitment_seconds=(
                         self._event_idle_commitment_seconds
                         if int(task_id) == -1
-                        else self._event_commitment_seconds
+                        else int(commitment)
                     ),
                 )
-                for task_id in assignment
+                for task_id, commitment in zip(assignment, commitments)
             ]
 
         assignment = self._runtime.update(
@@ -525,7 +697,7 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                 previous_start_times[satellite_index]
             ):
                 continue
-            self.event_history.append({
+            item: dict[str, object] = {
                 'time': time,
                 'satellite_index': satellite_index,
                 'task_id': int(assignment[satellite_index]),
@@ -533,8 +705,11 @@ class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
                     state.remaining_seconds[satellite_index]
                 ),
                 'trigger': triggers[satellite_index],
-            })
+            }
+            item.update(learned_metadata.get(satellite_index, {}))
+            self.event_history.append(item)
 
+        self._causal_history.record(assignment)
         return (
             actions_from_assignment(
                 assignment=assignment,
@@ -568,6 +743,8 @@ def rollout_one(
     event_actor: bool = False,
     event_commitment_seconds: int | None = None,
     event_idle_commitment_seconds: int = 1,
+    event_learned_commitment: bool = False,
+    event_continue_threshold: float = 0.5,
 ) -> None:
     trajectory_dir = output_root / split / f'{id_ // 1000:02}'
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -619,12 +796,12 @@ def rollout_one(
         seed=seed,
     )
     if event_actor:
-        if event_commitment_seconds is None:
-            raise ValueError('event commitment is required')
         algorithm: GreedyModelAlgorithm = EventGreedyModelAlgorithm(
             **common_algorithm_kwargs,
             event_commitment_seconds=event_commitment_seconds,
             event_idle_commitment_seconds=event_idle_commitment_seconds,
+            learned_event_commitment=event_learned_commitment,
+            event_continue_threshold=event_continue_threshold,
         )
     else:
         algorithm = GreedyModelAlgorithm(**common_algorithm_kwargs)
@@ -650,6 +827,8 @@ def main() -> None:
         event_actor=args.event_actor,
         event_commitment_seconds=args.event_commitment_seconds,
         event_idle_commitment_seconds=args.event_idle_commitment_seconds,
+        event_learned_commitment=args.event_learned_commitment,
+        event_continue_threshold=args.event_continue_threshold,
     )
     annotation_path = args.annotation_file
     if annotation_path is None:
@@ -683,6 +862,8 @@ def main() -> None:
             'event_idle_commitment_seconds': (
                 args.event_idle_commitment_seconds
             ),
+            'event_learned_commitment': args.event_learned_commitment,
+            'event_continue_threshold': args.event_continue_threshold,
         },
         rank=rank,
     )
@@ -707,6 +888,8 @@ def main() -> None:
             event_idle_commitment_seconds=(
                 args.event_idle_commitment_seconds
             ),
+            event_learned_commitment=args.event_learned_commitment,
+            event_continue_threshold=args.event_continue_threshold,
         )
 
 

@@ -283,3 +283,38 @@ censored duration 和未观测 horizon 不进入对应指标。
 
 先判断 stop recall、duration balanced accuracy 与五档预测分布，再看 outcome；
 训练 loss 下降或多数类 accuracy 高均不能单独通过验收。
+
+### Task 8：M2-C 学习式事件承诺
+
+**Files:**
+- Modify: `constellation/new_transformers/event_action.py`
+- Modify: `tools/rollout_model_trajectories.py`
+- Modify: `tests/test_event_action.py`
+- Modify: `tests/test_rollout_model_candidates.py`
+- Create: `scripts/run_event_actor_m2_smoke_slurm.sh`
+
+- [x] **Step 1: TDD 实现 continue gate 与 duration 选择**
+
+只对 Actor 已选中的非空边 gather M2 logits。`continue_probability < 0.5` 时保守承诺
+1 秒，否则使用 duration 五档 argmax；idle 始终 1 秒。
+
+- [x] **Step 2: 在线因果历史与 M2 checkpoint**
+
+复用 `CausalAssignmentHistory` 每物理秒记录全局任务，决策前映射到当前 ongoing
+候选；M2 推理模型使用 `(5,15,30,60)` outcome horizons 和
+`temporal_residual_scale=0`，因此任务 logits 不被 adapter 改写。
+
+- [x] **Step 3: 保持 M1 固定承诺兼容**
+
+CLI 要求 fixed commitment 与 `--event-learned-commitment` 二选一；已有固定
+`1/5/15/30/60 s` 路径和 idle/taskset 唤醒语义保持不变。
+
+- [x] **Step 4: 行为审计字段与 Slurm smoke**
+
+新增 continue 概率、gate 通过率和 duration proposal 分布；准备 train scene 0、
+完整 3,600 秒、CPU Slurm smoke，不使用 Test。
+
+- [ ] **Step 5: 运行单场 Basilisk 并应用停止门槛**
+
+完整报告 `CR/PCR/WCR/TAT_s/PC_Wh/CS_paper`、任务一秒承诺率、五档分布、模型调用和
+中断原因。若任务承诺塌缩为单一档或 `CS_paper` 明显恶化，不扩大 Val。

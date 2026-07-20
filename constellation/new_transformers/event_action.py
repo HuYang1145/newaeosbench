@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterable, Sequence
+from typing import NamedTuple
 
 import torch
 
@@ -16,7 +17,88 @@ __all__ = [
     'ALLOWED_EVENT_COMMITMENTS',
     'EventAssignmentState',
     'EventDecision',
+    'LearnedEventCommitments',
+    'select_learned_event_commitments',
 ]
+
+
+class LearnedEventCommitments(NamedTuple):
+    commitment_seconds: torch.Tensor
+    duration_proposals: torch.Tensor
+    continue_probabilities: torch.Tensor
+    task_selected: torch.Tensor
+
+
+def select_learned_event_commitments(
+    *,
+    relative_task_ids: torch.Tensor,
+    continue_logits: torch.Tensor,
+    duration_logits: torch.Tensor,
+    continue_threshold: float,
+) -> LearnedEventCommitments:
+    """为 Actor 已选中的任务读取 M2 终止和持续时间预测。"""
+    if not 0 < continue_threshold < 1:
+        raise ValueError('continue threshold must be in (0, 1)')
+    if relative_task_ids.ndim != 1:
+        raise ValueError('relative task ids must be one-dimensional')
+    if continue_logits.ndim != 2:
+        raise ValueError('continue logits must have shape satellites/tasks')
+    if duration_logits.ndim != 3 or duration_logits.shape[-1] != len(
+        ALLOWED_EVENT_COMMITMENTS
+    ):
+        raise ValueError(
+            'duration logits must have five commitment classes'
+        )
+    if (
+        continue_logits.shape != duration_logits.shape[:2]
+        or continue_logits.shape[0] != relative_task_ids.numel()
+    ):
+        raise ValueError('event logits and selected tasks must align')
+    task_selected = relative_task_ids >= 0
+    selected = relative_task_ids[task_selected]
+    if selected.numel() and int(selected.max()) >= continue_logits.shape[1]:
+        raise ValueError('relative task id exceeds event logits')
+    if (relative_task_ids < -1).any():
+        raise ValueError('relative task ids must be -1 or non-negative')
+
+    indices = relative_task_ids.clamp_min(0)
+    row_indices = torch.arange(
+        relative_task_ids.numel(),
+        device=relative_task_ids.device,
+    )
+    selected_continue_logits = continue_logits[row_indices, indices]
+    selected_duration_logits = duration_logits[row_indices, indices]
+    continue_probabilities = selected_continue_logits.sigmoid()
+    commitments = torch.tensor(
+        ALLOWED_EVENT_COMMITMENTS,
+        dtype=torch.long,
+        device=duration_logits.device,
+    )
+    duration_proposals = commitments[
+        selected_duration_logits.argmax(-1)
+    ]
+    ones = torch.ones_like(duration_proposals)
+    duration_proposals = torch.where(
+        task_selected,
+        duration_proposals,
+        ones,
+    )
+    commitment_seconds = torch.where(
+        task_selected & (continue_probabilities >= continue_threshold),
+        duration_proposals,
+        ones,
+    )
+    continue_probabilities = torch.where(
+        task_selected,
+        continue_probabilities,
+        torch.zeros_like(continue_probabilities),
+    )
+    return LearnedEventCommitments(
+        commitment_seconds=commitment_seconds,
+        duration_proposals=duration_proposals,
+        continue_probabilities=continue_probabilities,
+        task_selected=task_selected,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
