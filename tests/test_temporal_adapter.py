@@ -1,5 +1,6 @@
 import torch
 
+from constellation.new_transformers import temporal_adapter
 from constellation.new_transformers.temporal_adapter import (
     TemporalAdapter,
     TemporalAdapterOutput,
@@ -100,6 +101,8 @@ def test_temporal_adapter_outputs_all_outcome_shapes() -> None:
     assert result.time_to_first_visible.shape == (1, 2, 3, 3)
     assert result.time_to_first_progress.shape == (1, 2, 3, 3)
     assert result.time_to_completion.shape == (1, 2, 3, 3)
+    assert result.continue_logits.shape == (1, 2, 3)
+    assert result.duration_logits.shape == (1, 2, 3, 5)
 
 
 def test_temporal_adapter_rejects_available_out_of_range_previous_task() -> None:
@@ -228,6 +231,8 @@ def _outcome_output(visible_horizon_logits: torch.Tensor) -> TemporalAdapterOutp
         time_to_first_visible=zero_horizon.clone(),
         time_to_first_progress=zero_horizon.clone(),
         time_to_completion=zero_horizon.clone(),
+        continue_logits=torch.zeros(shape, requires_grad=True),
+        duration_logits=torch.zeros(1, 2, 1, 5, requires_grad=True),
     )
 
 
@@ -320,3 +325,71 @@ def test_temporal_outcome_loss_returns_differentiable_zero_for_idle_batch() -> N
     assert total.item() == 0.
     total.backward()
     assert output.visible_logits.grad is not None
+
+
+def test_temporal_event_loss_uses_only_executed_observed_edges() -> None:
+    adapter = TemporalAdapter(
+        satellite_width=8,
+        task_width=8,
+        hidden_width=16,
+        horizons=(5,),
+    )
+    output = _forward(adapter)
+    targets = _outcome_targets()
+
+    losses = temporal_adapter.temporal_event_loss(
+        output,
+        targets,
+        torch.tensor([[0, -1]]),
+    )
+
+    assert torch.isfinite(losses.continue_loss)
+    assert torch.isfinite(losses.duration_loss)
+    total = losses.continue_loss + losses.duration_loss
+    total.backward()
+    assert adapter.event_head.weight.grad is not None
+
+
+def test_temporal_event_loss_returns_zero_for_idle_batch() -> None:
+    adapter = TemporalAdapter(
+        satellite_width=8,
+        task_width=8,
+        hidden_width=16,
+        horizons=(5,),
+    )
+    output = _forward(adapter)
+
+    losses = temporal_adapter.temporal_event_loss(
+        output,
+        _outcome_targets(),
+        torch.full((1, 2), -1, dtype=torch.long),
+    )
+    total = losses.continue_loss + losses.duration_loss
+
+    assert total.item() == 0.
+    total.backward()
+    assert adapter.event_head.weight.grad is not None
+
+
+def test_temporal_event_loss_rejects_invalid_observed_duration() -> None:
+    adapter = TemporalAdapter(
+        satellite_width=8,
+        task_width=8,
+        hidden_width=16,
+        horizons=(5,),
+    )
+    targets = _outcome_targets()._replace(
+        event_duration_index=torch.tensor([[5, 0]]),
+        event_duration_observed=torch.tensor([[True, False]]),
+    )
+
+    try:
+        temporal_adapter.temporal_event_loss(
+            _forward(adapter),
+            targets,
+            torch.tensor([[0, -1]]),
+        )
+    except ValueError as error:
+        assert 'duration' in str(error)
+    else:
+        raise AssertionError('invalid observed duration index must fail')

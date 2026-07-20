@@ -98,12 +98,12 @@ Expected: PASS。
 - Modify: `constellation/new_transformers/temporal_adapter.py`
 - Modify: `tests/test_temporal_adapter.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖输出形状、按已执行任务 gather、全 idle/全 censored 返回可反传零，以及非法
 duration index 拒绝。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -114,12 +114,12 @@ Run:
 
 Expected: FAIL，原因是事件 heads/loss 不存在。
 
-- [ ] **Step 3: 实现 heads 与 loss**
+- [x] **Step 3: 实现 heads 与 loss**
 
 从 `edge_hidden` 输出 `continue_logits` 和五档 `duration_logits`；损失只在真实执行
 非空边和 observed duration 上计算。
 
-- [ ] **Step 4: 验证 GREEN 并提交**
+- [x] **Step 4: 验证 GREEN 并提交**
 
 Run:
 

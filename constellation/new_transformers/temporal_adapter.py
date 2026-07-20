@@ -13,10 +13,12 @@ from torch.nn import functional as F
 __all__ = [
     'TemporalHistoryTensors',
     'TemporalAdapterOutput',
+    'TemporalEventLosses',
     'TemporalOutcomeLosses',
     'TemporalOutcomePositiveWeights',
     'TemporalAdapter',
     'masked_binary_cross_entropy',
+    'temporal_event_loss',
     'temporal_outcome_loss',
 ]
 
@@ -74,6 +76,13 @@ class TemporalAdapterOutput(NamedTuple):
     time_to_first_visible: torch.Tensor
     time_to_first_progress: torch.Tensor
     time_to_completion: torch.Tensor
+    continue_logits: torch.Tensor
+    duration_logits: torch.Tensor
+
+
+class TemporalEventLosses(NamedTuple):
+    continue_loss: torch.Tensor
+    duration_loss: torch.Tensor
 
 
 class TemporalOutcomeLosses(NamedTuple):
@@ -176,6 +185,80 @@ def _classification_outcome_loss(
         ),
     )
     return next_loss + horizon_loss
+
+
+def temporal_event_loss(
+    output: TemporalAdapterOutput,
+    targets,
+    actions_task_id: torch.Tensor,
+    *,
+    continue_positive_weight: torch.Tensor | None = None,
+    duration_class_weights: torch.Tensor | None = None,
+) -> TemporalEventLosses:
+    """监督已执行非空边的下一步持续和保守承诺时长。"""
+    if actions_task_id.ndim != 2:
+        raise ValueError('actions_task_id must have shape (batch, satellites)')
+    num_tasks = output.continue_logits.shape[2]
+    selected = actions_task_id[actions_task_id >= 0]
+    if selected.numel() and int(selected.max()) >= num_tasks:
+        raise ValueError('actions_task_id exceeds temporal task logits')
+    valid = targets.outcome_valid.bool() & (actions_task_id >= 0)
+    if targets.event_continue.shape != actions_task_id.shape:
+        raise ValueError('event continue targets must match actions')
+    if targets.event_duration_index.shape != actions_task_id.shape:
+        raise ValueError('event duration targets must match actions')
+    if targets.event_duration_observed.shape != actions_task_id.shape:
+        raise ValueError('event duration mask must match actions')
+
+    executed_continue = _gather_executed_edges(
+        output.continue_logits,
+        actions_task_id,
+    )
+    continue_loss = masked_binary_cross_entropy(
+        executed_continue,
+        targets.event_continue,
+        valid,
+        continue_positive_weight,
+    )
+
+    executed_duration = _gather_executed_edges(
+        output.duration_logits,
+        actions_task_id,
+    )
+    duration_observed = valid & targets.event_duration_observed.bool()
+    duration_targets = targets.event_duration_index.long()
+    observed_targets = duration_targets[duration_observed]
+    if observed_targets.numel() and (
+        (observed_targets < 0).any()
+        or (observed_targets >= executed_duration.shape[-1]).any()
+    ):
+        raise ValueError('observed duration index is out of range')
+    if duration_class_weights is not None:
+        duration_class_weights = duration_class_weights.to(
+            device=executed_duration.device,
+            dtype=executed_duration.dtype,
+        )
+        if duration_class_weights.shape != (executed_duration.shape[-1],):
+            raise ValueError('duration class weights have an invalid shape')
+        if (
+            not torch.isfinite(duration_class_weights).all()
+            or (duration_class_weights <= 0).any()
+        ):
+            raise ValueError(
+                'duration class weights must be finite and positive'
+            )
+    if duration_observed.any():
+        duration_loss = F.cross_entropy(
+            executed_duration[duration_observed],
+            observed_targets,
+            weight=duration_class_weights,
+        )
+    else:
+        duration_loss = executed_duration.sum() * 0.
+    return TemporalEventLosses(
+        continue_loss=continue_loss,
+        duration_loss=duration_loss,
+    )
 
 
 def temporal_outcome_loss(
@@ -337,10 +420,13 @@ class TemporalAdapter(nn.Module):
             hidden_width,
             3 + 6 * len(self.horizons),
         )
+        self.event_head = nn.Linear(hidden_width, 6)
         nn.init.zeros_(self.task_residual.weight)
         nn.init.zeros_(self.task_residual.bias)
         nn.init.zeros_(self.null_residual.weight)
         nn.init.zeros_(self.null_residual.bias)
+        nn.init.zeros_(self.event_head.weight)
+        nn.init.zeros_(self.event_head.bias)
 
     @staticmethod
     def _history_features(
@@ -463,6 +549,8 @@ class TemporalAdapter(nn.Module):
             3,
             num_horizons,
         )
+        event = self.event_head(edge_hidden)
+        event = event.masked_fill(~valid_edges.unsqueeze(-1), 0.)
         return TemporalAdapterOutput(
             null_delta=null_delta,
             task_delta=task_delta,
@@ -475,4 +563,6 @@ class TemporalAdapter(nn.Module):
             time_to_first_visible=event_times[..., 0, :],
             time_to_first_progress=event_times[..., 1, :],
             time_to_completion=event_times[..., 2, :],
+            continue_logits=event[..., 0],
+            duration_logits=event[..., 1:],
         )
