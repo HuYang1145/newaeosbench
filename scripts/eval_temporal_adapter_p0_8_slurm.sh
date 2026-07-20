@@ -6,6 +6,7 @@
 #SBATCH --mem=96G
 #SBATCH --time=02:00:00
 #SBATCH --account=lab_team
+#SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/temporal_adapter_p0_eval8_slurm_%j.log
 
 set -euo pipefail
