@@ -32,6 +32,11 @@ from constellation.evaluators import (
 )
 from constellation.loggers import TrajectoryLogger
 from constellation.new_transformers import Model, Statistics
+from constellation.new_transformers.event_action import (
+    ALLOWED_EVENT_COMMITMENTS,
+    EventDecision,
+)
+from constellation.new_transformers.event_policy import EventActorRuntime
 from constellation.task_managers import TaskManager
 
 
@@ -55,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--top-k', type=int, default=3)
     parser.add_argument('--temperature', type=float, default=0.7)
     parser.add_argument('--seed', type=int, default=3407)
+    parser.add_argument('--event-actor', action='store_true')
+    parser.add_argument(
+        '--event-commitment-seconds',
+        type=int,
+        choices=ALLOWED_EVENT_COMMITMENTS,
+    )
     return parser.parse_args()
 
 
@@ -121,6 +132,111 @@ def ranked_task_candidates(
     return [
         -1 if index == 0 else int(task_ids[index - 1]) for index in indices
     ]
+
+
+def validate_event_options(
+    *,
+    event_actor: bool,
+    event_commitment_seconds: int | None,
+) -> None:
+    if event_actor and event_commitment_seconds is None:
+        raise ValueError(
+            '--event-actor requires --event-commitment-seconds'
+        )
+    if not event_actor and event_commitment_seconds is not None:
+        raise ValueError(
+            '--event-commitment-seconds requires --event-actor'
+        )
+    if (
+        event_commitment_seconds is not None
+        and event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS
+    ):
+        raise ValueError(
+            'event commitment must be one of '
+            f'{ALLOWED_EVENT_COMMITMENTS}'
+        )
+
+
+def actions_from_assignment(
+    *,
+    assignment: list[int],
+    taskset: TaskSet[Task],
+    constellation: Constellation,
+) -> Actions:
+    """把全局任务 ID 转回 Controller 使用的动作。"""
+    satellites = constellation.sort()
+    if len(assignment) != len(satellites):
+        raise ValueError('assignment must contain every satellite')
+    task_by_id = {int(task.id_): task for task in taskset}
+    actions = Actions()
+    for satellite, task_id in zip(satellites, assignment):
+        if task_id == -1:
+            actions.append(Action(
+                toggle=satellite.sensor.enabled,
+                target_location=None,
+            ))
+            continue
+        task = task_by_id.get(int(task_id))
+        if task is None:
+            raise ValueError('assignment references a non-ongoing task')
+        actions.append(Action(
+            toggle=not satellite.sensor.enabled,
+            target_location=task.coordinate,
+        ))
+    return actions
+
+
+def summarize_event_history(
+    history: list[dict[str, int | str]],
+) -> dict[str, object]:
+    """汇总事件承诺，任务动作与 idle 分开统计。"""
+
+    durations = [int(item['commitment_seconds']) for item in history]
+    task_durations = [
+        int(item['commitment_seconds'])
+        for item in history
+        if int(item['task_id']) >= 0
+    ]
+
+    def counts(values: list[int]) -> dict[str, int]:
+        output: dict[str, int] = {}
+        for value in values:
+            key = str(value)
+            output[key] = output.get(key, 0) + 1
+        return output
+
+    duration_counts = counts(durations)
+    task_duration_counts = counts(task_durations)
+    trigger_counts: dict[str, int] = {}
+    for item in history:
+        trigger = str(item['trigger'])
+        trigger_counts[trigger] = trigger_counts.get(trigger, 0) + 1
+
+    count = len(durations)
+    task_count = len(task_durations)
+    return {
+        'commitment_count': count,
+        'one_second_commitment_rate': (
+            0.0 if count == 0 else duration_counts.get('1', 0) / count
+        ),
+        'mean_commitment_seconds': (
+            0.0 if count == 0 else sum(durations) / count
+        ),
+        'duration_counts': duration_counts,
+        'task_commitment_count': task_count,
+        'task_one_second_commitment_rate': (
+            0.0
+            if task_count == 0
+            else task_duration_counts.get('1', 0) / task_count
+        ),
+        'task_mean_commitment_seconds': (
+            0.0
+            if task_count == 0
+            else sum(task_durations) / task_count
+        ),
+        'task_duration_counts': task_duration_counts,
+        'trigger_counts': trigger_counts,
+    }
 
 
 def write_rollout_metadata(
@@ -262,21 +378,126 @@ class GreedyModelAlgorithm(BaseAlgorithm):
             -1,
         ).tolist()
 
-        actions = Actions(
-            Action(
-                toggle=((task_id == -1 and satellite.sensor.enabled) or
-                        (task_id != -1 and not satellite.sensor.enabled)),
-                target_location=(
-                    None if relative_task_id ==
-                    -1 else taskset[int(relative_task_id)].coordinate
-                ),
-            ) for satellite, task_id, relative_task_id in zip(
-                constellation.sort(),
-                assignment,
-                relative_task_ids.tolist(),
-            )
+        return (
+            actions_from_assignment(
+                assignment=assignment,
+                taskset=taskset,
+                constellation=constellation,
+            ),
+            assignment,
         )
-        return actions, assignment
+
+
+class EventGreedyModelAlgorithm(GreedyModelAlgorithm):
+    """按固定非空承诺运行冻结 Stage3，只在事件发生时重规划。"""
+
+    def __init__(
+        self,
+        *args,
+        event_commitment_seconds: int,
+        **kwargs,
+    ) -> None:
+        if event_commitment_seconds not in ALLOWED_EVENT_COMMITMENTS:
+            raise ValueError(
+                'event_commitment_seconds must be one of '
+                f'{ALLOWED_EVENT_COMMITMENTS}'
+            )
+        super().__init__(*args, **kwargs)
+        self._event_commitment_seconds = event_commitment_seconds
+        self._runtime: EventActorRuntime | None = None
+        self.model_call_count = 0
+        self.event_history: list[dict[str, int | str]] = []
+
+    def prepare(
+        self,
+        environment: BaseEnvironment,
+        task_manager: TaskManager,
+    ) -> None:
+        super().prepare(environment, task_manager)
+        self._runtime = EventActorRuntime(
+            num_satellites=len(environment.get_constellation())
+        )
+
+    def step(
+        self,
+        taskset: TaskSet[Task],
+        constellation: Constellation,
+        earth_rotation: torch.Tensor,
+    ) -> tuple[Actions, list[int]]:
+        if self._runtime is None:
+            raise RuntimeError('algorithm must be prepared before step')
+
+        time = int(self._timer.time)
+        ongoing_task_ids = {
+            int(task_id) for task_id in taskset.ids.tolist()
+        }
+        state = self._runtime.state
+        previous_start_times = state.start_times.clone()
+        triggers: list[str] = []
+        for satellite_index, task_id in enumerate(state.assignment()):
+            last_update = int(state.last_update_times[satellite_index])
+            if last_update < 0:
+                triggers.append('initial')
+            elif task_id >= 0 and task_id not in ongoing_task_ids:
+                triggers.append('task_unavailable')
+            else:
+                triggers.append('expired')
+
+        def planner(
+            active_commitments: torch.Tensor,
+            previous_task_ids: torch.Tensor,
+        ) -> list[EventDecision]:
+            del active_commitments, previous_task_ids
+            _, assignment = GreedyModelAlgorithm.step(
+                self,
+                taskset,
+                constellation,
+                earth_rotation,
+            )
+            if len(taskset) > 0:
+                self.model_call_count += 1
+            return [
+                EventDecision(
+                    task_id=int(task_id),
+                    commitment_seconds=(
+                        1
+                        if int(task_id) == -1
+                        else self._event_commitment_seconds
+                    ),
+                )
+                for task_id in assignment
+            ]
+
+        assignment = self._runtime.update(
+            time=time,
+            ongoing_task_ids=ongoing_task_ids,
+            planner=planner,
+        )
+        for satellite_index, start_time in enumerate(
+            state.start_times.tolist()
+        ):
+            if int(start_time) == int(
+                previous_start_times[satellite_index]
+            ):
+                continue
+            self.event_history.append({
+                'time': time,
+                'satellite_index': satellite_index,
+                'task_id': int(assignment[satellite_index]),
+                'commitment_seconds': int(
+                    state.remaining_seconds[satellite_index]
+                ),
+                'trigger': triggers[satellite_index],
+            })
+
+        return (
+            actions_from_assignment(
+                assignment=assignment,
+                taskset=taskset,
+                constellation=constellation,
+            ),
+            assignment,
+        )
 
 
 def load_annotation_ids(path: pathlib.Path) -> list[int]:
@@ -299,6 +520,8 @@ def rollout_one(
     top_k: int = 3,
     temperature: float = 0.7,
     seed: int = 3407,
+    event_actor: bool = False,
+    event_commitment_seconds: int | None = None,
 ) -> None:
     trajectory_dir = output_root / split / f'{id_ // 1000:02}'
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -339,7 +562,7 @@ def rollout_one(
         task_manager=task_manager,
         callbacks=callbacks,
     )
-    algorithm = GreedyModelAlgorithm(
+    common_algorithm_kwargs = dict(
         timer=environment.timer,
         checkpoint=checkpoint,
         device=device,
@@ -349,17 +572,37 @@ def rollout_one(
         temperature=temperature,
         seed=seed,
     )
+    if event_actor:
+        if event_commitment_seconds is None:
+            raise ValueError('event commitment is required')
+        algorithm: GreedyModelAlgorithm = EventGreedyModelAlgorithm(
+            **common_algorithm_kwargs,
+            event_commitment_seconds=event_commitment_seconds,
+        )
+    else:
+        algorithm = GreedyModelAlgorithm(**common_algorithm_kwargs)
     algorithm.prepare(environment=environment, task_manager=task_manager)
     controller.run(algorithm, progress_bar=False)
 
     metrics = controller.memo['metrics']
     metrics['PC_Wh'] = metrics['PC'] / 3600.0
+    if isinstance(algorithm, EventGreedyModelAlgorithm):
+        assert algorithm._runtime is not None
+        metrics['event_behavior'] = {
+            **summarize_event_history(algorithm.event_history),
+            'model_call_count': algorithm.model_call_count,
+            'satellite_replan_count': algorithm._runtime.replan_count,
+        }
     json_dump(metrics, str(metrics_path))
     print(f'[rollout] split={split} id={id_} metrics={metrics}')
 
 
 def main() -> None:
     args = parse_args()
+    validate_event_options(
+        event_actor=args.event_actor,
+        event_commitment_seconds=args.event_commitment_seconds,
+    )
     annotation_path = args.annotation_file
     if annotation_path is None:
         annotation_path = ANNOTATIONS_ROOT / f'{args.split}.json'
@@ -387,6 +630,8 @@ def main() -> None:
             'top_k': args.top_k,
             'temperature': args.temperature,
             'seed': args.seed,
+            'event_actor': args.event_actor,
+            'event_commitment_seconds': args.event_commitment_seconds,
         },
         rank=rank,
     )
@@ -406,6 +651,8 @@ def main() -> None:
             top_k=args.top_k,
             temperature=args.temperature,
             seed=args.seed,
+            event_actor=args.event_actor,
+            event_commitment_seconds=args.event_commitment_seconds,
         )
 
 
