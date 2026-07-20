@@ -50,21 +50,40 @@ M0 结果、分支和基线收束
 
 ## M1：无训练事件式 Actor
 
-目标：Basilisk 仍按 1 秒推进，但冻结 Stage3 Actor 只在初始、非空任务承诺到期
-或任务失效时重新规划；第一轮只比较固定 `1/5/15/30/60 s` 承诺，不训练新模型。
+目标：Basilisk 仍按 1 秒推进，但冻结 Stage3 Actor 只在事件点接受新的非空任务
+决策；第一轮只比较固定 `1/5/15/30/60 s` 承诺，不训练新模型。
 
-- [ ] 新增每星 `EventAssignmentState`，使用全局 `task_id` 维护当前任务、剩余
+- [x] 新增每星 `EventAssignmentState`，使用全局 `task_id` 维护当前任务、剩余
   承诺、开始时间和中断原因。
-- [ ] 新增 `EventActorRuntime`；承诺有效时不调用 planner，只在事件发生时重规划
+- [x] 新增 `EventActorRuntime`；承诺有效时不调用 planner，只在事件发生时重规划
   对应卫星。
-- [ ] idle 始终只承诺 1 秒；任务完成、到期、失败或离开 ongoing 集合时立即中断。
-- [ ] 接入 `tools/rollout_model_trajectories.py`，新增 `--event-actor` 和
-  `--event-commitment-seconds`，默认关闭，关闭时逐秒 Stage3 行为保持不变。
-- [ ] 输出 `model_call_count`、每档承诺数量、任务一秒承诺率、任务平均承诺时长和
+- [x] 默认 idle 承诺 1 秒以保持新任务响应；另保留可控的多秒 idle 消融，
+  `ongoing taskset` 变化时立即唤醒 idle 卫星。任务完成、到期、失败或离开
+  ongoing 集合时立即中断。
+- [x] 接入 `tools/rollout_model_trajectories.py`，新增 `--event-actor`、
+  `--event-commitment-seconds` 和 `--event-idle-commitment-seconds`；默认关闭，
+  关闭时逐秒 Stage3 行为保持不变。
+- [x] 输出 `model_call_count`、每档承诺数量、任务一秒承诺率、任务平均承诺时长和
   各类中断计数。
-- [ ] 完成单场完整 3,600 秒 CPU 协议 smoke；正式 8+8 Val 只通过 Slurm 运行。
-- [ ] 只有关闭兼容、任务失效中断、模型调用下降和定向测试全部通过，才把 M1
-  标记为“机制实现完成”；性能是否提高必须等待同场景 Val。
+- [x] 完成 train scene 0 的完整 3,600 秒 CPU 协议 smoke，并准备正式 8+8 Val
+  的 Slurm 包装；未使用 Test。
+- [x] M1 标记为“机制实现完成、性能未通过”：任务 5 秒、idle 1 秒时，非空任务
+  一秒承诺率降为 `0%`，但联合 Actor 仍调用模型 `3,580` 次，接近逐秒路径，
+  且 `CS_paper 3.6409 → 3.7189`，不满足进入正式 Val 的收益门槛。
+
+单场机制 smoke（仅用于诊断，不作为泛化结论）：
+
+| 方案 | CR/% | PCR/% | WCR/% | TAT_s | PC_Wh | CS_paper | model calls |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Stage3 逐秒 baseline | 64.44 | 68.62 | 64.76 | 425.33 | 150.29 | 3.6409 | 未单独记录 |
+| task 5 s / idle 1 s | 65.56 | 67.89 | 69.59 | 343.58 | 173.18 | 3.7189 | 3,580 |
+| task 5 s / idle 5 s，taskset 唤醒 | 56.67 | 61.87 | 58.60 | 381.49 | 153.85 | 3.8048 | 3,056 |
+
+结论：事件承诺已经真正作用于任务动作，但 42 星联合 Transformer 只要任一 idle
+卫星需要重规划，就仍会做一次全星前向；因此响应式配置没有实质减少全局前向。
+盲目延长 idle 虽相对响应式配置减少 `14.6%` 模型调用，
+却明显漏掉可用时机。M2 应训练终止/持续时间/事实结果头，并将“是否触发全局
+Actor 前向”与“哪些卫星接受新动作”进一步解耦，而不是继续手工放大固定时长。
 
 ## 当前基线
 

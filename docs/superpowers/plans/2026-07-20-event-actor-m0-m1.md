@@ -9,9 +9,11 @@
 或固定承诺到期。
 
 **Architecture:** Basilisk 仍以 1 秒物理步长推进；新增纯 Python/PyTorch 的
-`EventAssignmentState` 和 `EventActorRuntime`，只在任务失效、承诺到期或初始状态
-调用冻结的 Stage3 Actor。第一轮使用固定的 `1/5/15/30/60 s` 承诺做因果消融，
-不引入 duration head、PPO、在线候选 Basilisk 或硬 owner 分配。
+`EventAssignmentState` 和 `EventActorRuntime`，只在任务失效、承诺到期、任务集
+变化或初始状态接受新的局部动作。第一轮使用固定的 `1/5/15/30/60 s` 承诺做因果
+消融，不引入 duration head、PPO、在线候选 Basilisk 或硬 owner 分配。真实 smoke
+确认 42 星联合 Actor 的全局前向次数不会随局部任务承诺等比例下降，因此“局部动作
+更新”和“全局模型前向”作为两个指标分别验收。
 
 **Tech Stack:** Python 3.11、PyTorch、pytest、现有
 `Controller + BasiliskEnvironment + TaskManager + Evaluators`。
@@ -97,7 +99,7 @@ Expected commit:
 - Resolve: `TODO.md`
 - Resolve: `改进日志.md`
 
-- [ ] **Step 1: 合并经过验证的 Temporal Adapter 分支**
+- [x] **Step 1: 合并经过验证的 Temporal Adapter 分支**
 
 Run:
 
@@ -108,7 +110,7 @@ git merge --no-ff codex/p0-causal-history-adapter
 Expected: 代码冲突只允许出现在双方都记录实验状态的文档；不得删除当前 Graph-Q
 文件或 Temporal History 测试。
 
-- [ ] **Step 2: 解决文档冲突并保留两条实验历史**
+- [x] **Step 2: 解决文档冲突并保留两条实验历史**
 
 保留以下事实：
 
@@ -118,7 +120,7 @@ P3.1 局部 Graph-Q pilot 只有 18 个有效 pair、5 个 scene、1/4 fold 通�
 300/600 秒偏好一致率为 0.4545，decision=stop_before_actor_or_reranking。
 ```
 
-- [ ] **Step 3: 运行合并回归**
+- [x] **Step 3: 运行合并回归**
 
 Run:
 
@@ -140,7 +142,7 @@ Expected: 全部通过。
 - Modify: `TODO.md`
 - Modify: `改进日志.md`
 
-- [ ] **Step 1: 在 TODO 顶部声明编号语义**
+- [x] **Step 1: 在 TODO 顶部声明编号语义**
 
 写入：
 
@@ -151,24 +153,24 @@ Expected: 全部通过。
 实验及产物目录的历史编号保留，不再继续扩展。
 ```
 
-- [ ] **Step 2: 把已完成和停止项写入 M0**
+- [x] **Step 2: 把已完成和停止项写入 M0**
 
 M0 必须记录 checkpoint、Temporal Adapter 结果、局部 Graph-Q 结果和分支合并状态。
 
-- [ ] **Step 3: 写入 M1 验收清单**
+- [x] **Step 3: 写入 M1 验收清单**
 
 M1 包含：
 
 ```text
 1. Stage3 关闭事件模式时动作完全兼容。
-2. 事件模式只在初始、承诺到期或任务失效时重规划。
+2. 事件模式只在初始、承诺到期、任务失效或 taskset 唤醒时重规划。
 3. Basilisk 仍每秒推进。
 4. 支持 1/5/15/30/60 秒固定承诺。
-5. idle 只承诺 1 秒。
+5. idle 默认只承诺 1 秒；多秒 idle 仅用于带 taskset 唤醒的消融。
 6. 先完成单场 smoke，再申请 Slurm 运行同场景 Val。
 ```
 
-- [ ] **Step 4: 文档检查**
+- [x] **Step 4: 文档检查**
 
 Run:
 
@@ -184,7 +186,7 @@ Expected: 无空白错误，活动待办中不再使用新 P 编号。
 - Create: `tests/test_event_action.py`
 - Create: `constellation/new_transformers/event_action.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 核心测试：
 
@@ -205,12 +207,12 @@ def test_event_state_counts_down_and_replans_at_expiry() -> None:
 ```text
 任务失效提前中断
 只替换需要重规划的卫星
-idle 不允许多秒承诺
+idle 默认 1 秒，多秒消融只允许在 taskset 变化时立即唤醒
 不支持的承诺时长被拒绝
 时间倒退被拒绝
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -221,7 +223,7 @@ Run:
 
 Expected: FAIL，原因是 `event_action` 尚不存在。
 
-- [ ] **Step 3: 实现最小状态机**
+- [x] **Step 3: 实现最小状态机**
 
 公开 API：
 
@@ -245,9 +247,6 @@ class EventDecision:
             raise ValueError("unsupported event commitment")
         if self.task_id < -1:
             raise ValueError("task_id must be -1 or non-negative")
-        if self.task_id == -1 and self.commitment_seconds != 1:
-            raise ValueError("idle action must use one second")
-
 @dataclasses.dataclass
 class EventAssignmentState:
     task_ids: torch.Tensor
@@ -341,7 +340,7 @@ class EventAssignmentState:
         return replans
 ```
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run:
 
@@ -352,7 +351,7 @@ Run:
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交状态机**
+- [x] **Step 5: 提交状态机**
 
 ```bash
 git add constellation/new_transformers/event_action.py tests/test_event_action.py
@@ -365,7 +364,7 @@ git commit -m "feat: add event assignment state machine"
 - Create: `tests/test_event_policy.py`
 - Create: `constellation/new_transformers/event_policy.py`
 
-- [ ] **Step 1: 写 planner 调用次数失败测试**
+- [x] **Step 1: 写 planner 调用次数失败测试**
 
 ```python
 def test_runtime_skips_planner_before_event() -> None:
@@ -384,7 +383,7 @@ def test_runtime_skips_planner_before_event() -> None:
 
 还要覆盖任务失效只重规划对应卫星，仍有效的其他卫星保持剩余承诺。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -395,7 +394,7 @@ Run:
 
 Expected: FAIL，原因是 `EventActorRuntime` 尚不存在。
 
-- [ ] **Step 3: 实现最小 runtime**
+- [x] **Step 3: 实现最小 runtime**
 
 ```python
 from __future__ import annotations
@@ -445,7 +444,7 @@ class EventActorRuntime:
 
 planner 仍返回每颗卫星一个 decision，但 runtime 只替换 `replan=True` 的卫星。
 
-- [ ] **Step 4: 验证 GREEN 并提交**
+- [x] **Step 4: 验证 GREEN 并提交**
 
 Run:
 
@@ -469,7 +468,7 @@ git commit -m "feat: add event actor runtime"
 - Modify: `tests/test_rollout_model_candidates.py`
 - Modify: `tools/rollout_model_trajectories.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖：
 
@@ -478,12 +477,12 @@ git commit -m "feat: add event actor runtime"
 不启用 event actor 时继续逐秒调用 Stage3。
 启用后，5 秒承诺期间只调用一次模型。
 任务从 ongoing 集合消失时立即重规划。
-idle 始终使用 1 秒承诺。
+idle 默认使用 1 秒承诺；多秒 idle 在 taskset 变化时立即重规划。
 输出 task_one_second_commitment_rate、task_mean_commitment_seconds、
 model_call_count 和 interruption reason。
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -494,13 +493,14 @@ Run:
 
 Expected: 新增事件式测试失败，旧测试仍通过。
 
-- [ ] **Step 3: 最小接入**
+- [x] **Step 3: 最小接入**
 
 新增参数：
 
 ```text
 --event-actor
 --event-commitment-seconds {1,5,15,30,60}
+--event-idle-commitment-seconds {1,5,15,30,60}
 ```
 
 新增 `EventGreedyModelAlgorithm`：
@@ -508,13 +508,13 @@ Expected: 新增事件式测试失败，旧测试仍通过。
 ```text
 planner 被调用时执行一次现有 Stage3 greedy；
 非空 task 使用固定 commitment；
-idle 使用 1 秒；
+idle 默认使用 1 秒，多秒 idle 仅作带 taskset 唤醒的消融；
 每个物理秒仍返回当前缓存 assignment 给 Controller；
 任务失效时 runtime 提前触发 planner；
 不调用在线 Basilisk 候选搜索。
 ```
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run:
 
@@ -527,7 +527,7 @@ Run:
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交 rollout 接入**
+- [x] **Step 5: 提交 rollout 接入**
 
 ```bash
 git add tools/rollout_model_trajectories.py \
@@ -543,7 +543,7 @@ git commit -m "feat: run stage3 actor on scheduling events"
 - Modify: `TODO.md`
 - Modify: `改进日志.md`
 
-- [ ] **Step 1: 写脚本静态测试**
+- [x] **Step 1: 写脚本静态测试**
 
 测试脚本必须：
 
@@ -555,18 +555,19 @@ git commit -m "feat: run stage3 actor on scheduling events"
 不使用 Test
 ```
 
-- [ ] **Step 2: 运行单场 CPU smoke**
+- [x] **Step 2: 运行单场 CPU smoke**
 
 以 train scene 0 依次运行 baseline 1 秒与 event 5 秒，确认：
 
 ```text
 完整 3600 秒场景能结束；
-event 路径 model_call_count 下降；
+任务承诺期间不覆盖该卫星动作；
+分别统计全局 model_call_count 和局部 satellite_replan_count；
 任务失效没有崩溃；
 metrics 和 macro/event behavior 均落盘。
 ```
 
-- [ ] **Step 3: 运行完整定向回归**
+- [x] **Step 3: 运行完整定向回归**
 
 Run:
 
@@ -583,7 +584,7 @@ Run:
 
 Expected: 全部通过。
 
-- [ ] **Step 4: 记录结果并提交**
+- [x] **Step 4: 记录结果并提交**
 
 ```bash
 git add TODO.md 改进日志.md scripts/run_event_actor_m1_*.sh
@@ -598,11 +599,17 @@ git commit -m "docs: record event actor m1 smoke"
 ```text
 关闭事件模式时兼容 Stage3；
 单场真实 smoke 无错误；
-5 秒模式显著减少 model call；
+5 秒模式显著减少非空任务的一秒承诺；
 没有完成/失效任务被继续引用；
 新增路径不调用在线候选 Basilisk；
 定向测试全部通过。
 ```
+
+真实 smoke 发现：42 星联合 Actor 只要任一响应式 idle 卫星需要规划，就会执行
+一次全局 Transformer 前向，所以局部事件承诺不能保证 `model_call_count` 同比例
+下降。task 5 秒 / idle 1 秒的任务一秒承诺率为 `0%`，但模型调用仅降至 `3,580`；
+task 5 秒 / idle 5 秒虽降至 `3,056`，却使 `CS_paper` 恶化到 `3.8048`。因此 M1
+机制完成，但不进入 8+8 Val，M2 需要学习终止与持续时间，而不是继续手工延长 idle。
 
 进入 M2 或正式完整 Val 还需要后续同场景实验确认：
 
