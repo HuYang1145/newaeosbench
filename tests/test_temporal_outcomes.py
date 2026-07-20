@@ -1,5 +1,6 @@
 import torch
 
+from constellation.new_transformers import multi_horizon_edge_labels
 from constellation.new_transformers.multi_horizon_edge_labels import (
     BatchedEdgeOutcomes,
     build_batched_edge_outcomes,
@@ -120,3 +121,44 @@ def test_batched_outcomes_validate_selected_task_ids() -> None:
         assert 'task ids' in str(error)
     else:
         raise AssertionError('out-of-range selected task IDs must fail')
+
+
+def test_event_supervision_maps_remaining_runs_to_safe_buckets() -> None:
+    time = 61
+    actions = torch.empty(time, 6, dtype=torch.long)
+    run_lengths = (1, 5, 15, 30, 60)
+    for satellite, run_length in enumerate(run_lengths):
+        actions[:run_length, satellite] = satellite
+        actions[run_length:, satellite] = satellite + 10
+    actions[:, -1] = -1
+
+    result = multi_horizon_edge_labels.build_event_supervision(actions)
+
+    assert result.valid[0].tolist() == [True] * 5 + [False]
+    assert result.continue_next[0].tolist() == [
+        False, True, True, True, True, False,
+    ]
+    assert result.duration_index[0].tolist() == [0, 1, 2, 3, 4, 0]
+    assert result.duration_observed[0].tolist() == [True] * 5 + [False]
+    assert result.remaining_run_lengths[0].tolist() == [
+        1, 5, 15, 30, 60, 61,
+    ]
+
+
+def test_event_supervision_censors_short_run_at_trajectory_end() -> None:
+    actions = torch.tensor([[3], [3], [3], [3], [3]])
+
+    result = multi_horizon_edge_labels.build_event_supervision(actions)
+
+    assert result.continue_next[:, 0].tolist() == [True] * 4
+    assert result.duration_index[:, 0].tolist() == [1, 0, 0, 0]
+    assert result.duration_observed[:, 0].tolist() == [False] * 4
+
+
+def test_event_supervision_keeps_max_bucket_observed_at_end() -> None:
+    actions = torch.zeros(61, 1, dtype=torch.long)
+
+    result = multi_horizon_edge_labels.build_event_supervision(actions)
+
+    assert result.duration_index[0, 0].item() == 4
+    assert result.duration_observed[0, 0].item() is True

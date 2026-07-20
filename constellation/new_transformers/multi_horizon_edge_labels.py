@@ -65,6 +65,17 @@ class BatchedEdgeOutcomes:
     horizons: dict[int, HorizonOutcomeTensors]
 
 
+@dataclasses.dataclass(frozen=True)
+class EventSupervisionTensors:
+    """轨迹中 `0..T-2` 每颗卫星的事件持续行为标签。"""
+
+    valid: torch.Tensor
+    continue_next: torch.Tensor
+    duration_index: torch.Tensor
+    duration_observed: torch.Tensor
+    remaining_run_lengths: torch.Tensor
+
+
 def _validate_inputs(
     actions: torch.Tensor,
     is_visible: torch.Tensor,
@@ -298,6 +309,63 @@ def _run_lengths(actions: torch.Tensor) -> torch.Tensor:
             1,
         )
     return lengths
+
+
+def build_event_supervision(
+    actions: torch.Tensor,
+    commitments: Sequence[int] = (1, 5, 15, 30, 60),
+) -> EventSupervisionTensors:
+    """把真实非空动作连续段转换为保守的事件持续标签。"""
+    if actions.ndim != 2:
+        raise ValueError('actions must have shape (time, satellites)')
+    if actions.shape[0] < 2:
+        raise ValueError('actions must contain at least two time steps')
+    normalized = tuple(int(value) for value in commitments)
+    if (
+        not normalized
+        or normalized[0] != 1
+        or any(value <= 0 for value in normalized)
+        or any(a >= b for a, b in zip(normalized, normalized[1:]))
+    ):
+        raise ValueError(
+            'commitments must be strictly increasing and start at one'
+        )
+
+    actions = actions.to(dtype=torch.long)
+    selected = actions[:-1]
+    valid = selected >= 0
+    remaining = _run_lengths(actions)[:-1]
+    commitment_tensor = torch.tensor(
+        normalized,
+        dtype=remaining.dtype,
+        device=remaining.device,
+    )
+    duration_index = (
+        remaining.unsqueeze(-1) >= commitment_tensor
+    ).sum(-1).sub(1).clamp_min(0)
+    duration_index = torch.where(
+        valid,
+        duration_index,
+        torch.zeros_like(duration_index),
+    )
+
+    row = torch.arange(
+        selected.shape[0],
+        device=remaining.device,
+    ).unsqueeze(-1)
+    reaches_trajectory_end = row + remaining >= actions.shape[0]
+    duration_observed = valid & (
+        ~reaches_trajectory_end
+        | (remaining >= normalized[-1])
+    )
+    continue_next = valid & (actions[1:] == selected)
+    return EventSupervisionTensors(
+        valid=valid,
+        continue_next=continue_next,
+        duration_index=duration_index,
+        duration_observed=duration_observed,
+        remaining_run_lengths=remaining,
+    )
 
 
 def build_batched_edge_outcomes(

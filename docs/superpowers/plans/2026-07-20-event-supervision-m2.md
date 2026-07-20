@@ -20,12 +20,12 @@ Stage3-200k checkpoint 与轨迹。
 - Modify: `constellation/new_transformers/multi_horizon_edge_labels.py`
 - Modify: `tests/test_temporal_outcomes.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 覆盖 `1/5/15/30/60` 向下分桶、下一秒 continue、idle mask，以及延伸到轨迹末尾
 且小于 60 秒的 duration censor。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -36,12 +36,12 @@ Run:
 
 Expected: FAIL，原因是 `build_event_supervision()` 尚不存在。
 
-- [ ] **Step 3: 实现 `EventSupervisionTensors`**
+- [x] **Step 3: 实现 `EventSupervisionTensors`**
 
 新增 `valid/continue_next/duration_index/duration_observed/
 remaining_run_lengths`，承诺集合固定为 `(1, 5, 15, 30, 60)`。
 
-- [ ] **Step 4: 验证 GREEN 并提交**
+- [x] **Step 4: 验证 GREEN 并提交**
 
 Run:
 
