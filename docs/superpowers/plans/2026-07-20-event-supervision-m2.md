@@ -137,12 +137,12 @@ Expected: PASS。
 - Create: `constellation/new_transformers/config_event_heads_m2.py`
 - Modify: `tests/test_temporal_model.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 断言 M2 总 loss 包含 continue/duration，Stage3 主干无梯度，residual scale 为零时
 logits 精确兼容，配置只训练 Temporal Adapter。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -153,12 +153,12 @@ Run:
 
 Expected: FAIL，原因是 JointModel 尚无 M2 loss 参数和配置。
 
-- [ ] **Step 3: 接入损失和配置**
+- [x] **Step 3: 接入损失和配置**
 
 配置 horizons 为 `(5, 15, 30, 60)`、residual scale 为 `0`、主干冻结、动作/TimeModel
 loss 权重为 `0`，M2 六类监督权重初始为 `1`。
 
-- [ ] **Step 4: 验证 GREEN 并提交**
+- [x] **Step 4: 验证 GREEN 并提交**
 
 Run:
 

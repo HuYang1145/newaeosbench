@@ -130,6 +130,33 @@ def test_temporal_model_starts_with_exact_baseline_logits() -> None:
     torch.testing.assert_close(temporal_logits, baseline_logits, rtol=0, atol=0)
 
 
+def test_m2_zero_residual_keeps_logits_after_event_head_training() -> None:
+    baseline = Model(**_tiny_model_kwargs()).eval()
+    event_model = Model(
+        **_tiny_model_kwargs(),
+        use_temporal_adapter=True,
+        temporal_adapter_hidden_width=16,
+        temporal_horizons=(1,),
+        temporal_residual_scale=0.,
+    ).eval()
+    event_model.load_state_dict(baseline.state_dict(), strict=False)
+    adapter = event_model._transformer._temporal_adapter
+    assert adapter is not None
+    with torch.no_grad():
+        adapter.task_residual.bias.fill_(10.)
+        adapter.null_residual.bias.fill_(-10.)
+
+    inputs = _predict_inputs()
+    with torch.no_grad():
+        expected = baseline.predict(*inputs)
+        actual = event_model.predict(
+            *inputs,
+            temporal_history=_history(),
+        )
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 def test_temporal_model_requires_history_only_when_enabled() -> None:
     baseline = Model(**_tiny_model_kwargs()).eval()
     baseline.predict(*_predict_inputs())
@@ -256,6 +283,37 @@ def test_temporal_joint_model_backward_and_step_only_update_adapter() -> None:
         assert key in memo
 
 
+def test_m2_joint_model_adds_event_losses() -> None:
+    model = JointModel(
+        **_tiny_model_kwargs(),
+        use_temporal_adapter=True,
+        temporal_adapter_hidden_width=16,
+        temporal_horizons=(1,),
+        temporal_residual_scale=0.,
+        freeze_temporal_backbone=True,
+        feasibility_loss_weight=0.,
+        time_loss_weight=0.,
+        assignment_loss_weight=0.,
+        temporal_visible_loss_weight=1.,
+        temporal_progress_loss_weight=1.,
+        temporal_completion_loss_weight=1.,
+        temporal_event_time_loss_weight=1.,
+        temporal_continue_loss_weight=1.,
+        temporal_duration_loss_weight=1.,
+    )
+
+    memo = model(type('Runner', (), {'iter_': 0})(), _joint_batch(), {})
+
+    assert torch.isfinite(memo['loss'])
+    assert torch.isfinite(memo['temporal_continue_loss'])
+    assert torch.isfinite(memo['temporal_duration_loss'])
+    memo['loss'].backward()
+    assert (
+        model._transformer._temporal_adapter.event_head.weight.grad
+        is not None
+    )
+
+
 def test_temporal_joint_model_accepts_prefetched_nested_tuple() -> None:
     model = JointModel(
         **_tiny_model_kwargs(),
@@ -318,6 +376,29 @@ def test_temporal_adapter_pilot_config_freezes_stage3_backbone() -> None:
     )
     assert config.trainer.dataset.include_temporal_history is True
     assert config.validator.dataset.include_temporal_history is True
+    assert config.trainer.dataset.annotation_file == (
+        'train_paper_stage3_tau_e_existing.json'
+    )
+
+
+def test_m2_event_head_config_freezes_actor_without_residual() -> None:
+    config = PyConfig.load(
+        'constellation/new_transformers/config_event_heads_m2.py',
+    )
+
+    model = config.trainer.model
+    assert config.trainer.iters == 10_000
+    assert model.use_temporal_adapter is True
+    assert model.freeze_temporal_backbone is True
+    assert model.temporal_horizons == (5, 15, 30, 60)
+    assert model.temporal_residual_scale == 0.
+    assert model.assignment_loss_weight == 0.
+    assert model.feasibility_loss_weight == 0.
+    assert model.time_loss_weight == 0.
+    assert model.temporal_continue_loss_weight == 1.
+    assert model.temporal_duration_loss_weight == 1.
+    assert config.trainer.dataset.include_temporal_history is True
+    assert config.trainer.dataset.temporal_horizons == (5, 15, 30, 60)
     assert config.trainer.dataset.annotation_file == (
         'train_paper_stage3_tau_e_existing.json'
     )

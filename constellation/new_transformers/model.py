@@ -30,6 +30,7 @@ from .temporal_adapter import (
     TemporalAdapterOutput,
     TemporalHistoryTensors,
     TemporalOutcomePositiveWeights,
+    temporal_event_loss,
     temporal_outcome_loss,
 )
 
@@ -753,6 +754,10 @@ class JointModel(Model):
         temporal_progress_loss_weight: float = 0.0,
         temporal_completion_loss_weight: float = 0.0,
         temporal_event_time_loss_weight: float = 0.0,
+        temporal_continue_loss_weight: float = 0.0,
+        temporal_duration_loss_weight: float = 0.0,
+        temporal_continue_positive_weight: float | None = None,
+        temporal_duration_class_weights: tuple[float, ...] | None = None,
         temporal_visible_positive_weights: tuple[float, ...] | None = None,
         temporal_progress_positive_weights: tuple[float, ...] | None = None,
         temporal_completion_positive_weights: tuple[float, ...] | None = None,
@@ -789,7 +794,59 @@ class JointModel(Model):
         self._temporal_event_time_loss_weight = (
             temporal_event_time_loss_weight
         )
+        self._temporal_continue_loss_weight = (
+            temporal_continue_loss_weight
+        )
+        self._temporal_duration_loss_weight = (
+            temporal_duration_loss_weight
+        )
         temporal_adapter = self._transformer._temporal_adapter
+        if temporal_continue_positive_weight is not None and (
+            temporal_adapter is None
+            or not torch.isfinite(
+                torch.tensor(temporal_continue_positive_weight)
+            )
+            or temporal_continue_positive_weight <= 0
+        ):
+            raise ValueError(
+                'temporal continue positive weight must be finite and positive'
+            )
+        if temporal_duration_class_weights is not None and (
+            temporal_adapter is None
+            or len(temporal_duration_class_weights) != 5
+            or any(
+                not torch.isfinite(torch.tensor(value)) or value <= 0
+                for value in temporal_duration_class_weights
+            )
+        ):
+            raise ValueError(
+                'temporal duration class weights must contain five '
+                'finite positive values'
+            )
+        self.register_buffer(
+            '_temporal_continue_positive_weight',
+            (
+                None
+                if temporal_continue_positive_weight is None
+                else torch.tensor(
+                    temporal_continue_positive_weight,
+                    dtype=torch.float,
+                )
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            '_temporal_duration_class_weights',
+            (
+                None
+                if temporal_duration_class_weights is None
+                else torch.tensor(
+                    temporal_duration_class_weights,
+                    dtype=torch.float,
+                )
+            ),
+            persistent=False,
+        )
         expected_positive_weights = (
             None
             if temporal_adapter is None
@@ -920,6 +977,8 @@ class JointModel(Model):
                 temporal_progress_loss = logits.new_zeros(())
                 temporal_completion_loss = logits.new_zeros(())
                 temporal_event_time_loss = logits.new_zeros(())
+                temporal_continue_loss = logits.new_zeros(())
+                temporal_duration_loss = logits.new_zeros(())
             else:
                 if batch.temporal is None:
                     raise ValueError(
@@ -949,6 +1008,19 @@ class JointModel(Model):
                 temporal_progress_loss = temporal_losses.progress
                 temporal_completion_loss = temporal_losses.completion
                 temporal_event_time_loss = temporal_losses.event_time
+                event_losses = temporal_event_loss(
+                    temporal_output,
+                    batch.temporal,
+                    batch.actions_task_id,
+                    continue_positive_weight=(
+                        self._temporal_continue_positive_weight
+                    ),
+                    duration_class_weights=(
+                        self._temporal_duration_class_weights
+                    ),
+                )
+                temporal_continue_loss = event_losses.continue_loss
+                temporal_duration_loss = event_losses.duration_loss
 
         pred_durations, pred_masks = self._transformer._time_model._predict(
             batch.constraint_time_steps,
@@ -986,6 +1058,8 @@ class JointModel(Model):
             temporal_progress_loss = pred_durations.new_zeros(())
             temporal_completion_loss = pred_durations.new_zeros(())
             temporal_event_time_loss = pred_durations.new_zeros(())
+            temporal_continue_loss = pred_durations.new_zeros(())
+            temporal_duration_loss = pred_durations.new_zeros(())
         else:
             assignment_collision_loss = assignment_auxiliary.collision
             assignment_coverage_loss = assignment_auxiliary.coverage
@@ -1001,6 +1075,10 @@ class JointModel(Model):
             * temporal_completion_loss
             + self._temporal_event_time_loss_weight
             * temporal_event_time_loss
+            + self._temporal_continue_loss_weight
+            * temporal_continue_loss
+            + self._temporal_duration_loss_weight
+            * temporal_duration_loss
         )
         memo.update(
             loss=loss,
@@ -1016,6 +1094,8 @@ class JointModel(Model):
             temporal_progress_loss=temporal_progress_loss,
             temporal_completion_loss=temporal_completion_loss,
             temporal_event_time_loss=temporal_event_time_loss,
+            temporal_continue_loss=temporal_continue_loss,
+            temporal_duration_loss=temporal_duration_loss,
         )
 
         tensors: dict[str, torch.Tensor] = dict(
@@ -1031,6 +1111,8 @@ class JointModel(Model):
             temporal_progress_loss=temporal_progress_loss,
             temporal_completion_loss=temporal_completion_loss,
             temporal_event_time_loss=temporal_event_time_loss,
+            temporal_continue_loss=temporal_continue_loss,
+            temporal_duration_loss=temporal_duration_loss,
         )
         if log is not None:
             log.update({k: f'{v:.3f}' for k, v in tensors.items()})
