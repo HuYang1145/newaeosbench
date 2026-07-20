@@ -59,13 +59,13 @@ Expected: PASS。
 - Modify: `tests/test_temporal_dataset.py`
 - Modify: `tests/test_temporal_model.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 断言 `TemporalBatch` 在采样时间上给出正确的
 `event_continue/event_duration_index/event_duration_observed`，并确认历史输入仍只
 来自 `actions[:t]`。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run:
 
@@ -76,12 +76,12 @@ Run:
 
 Expected: FAIL，原因是 `TemporalBatch` 尚无事件字段。
 
-- [ ] **Step 3: 最小接入 Dataset**
+- [x] **Step 3: 最小接入 Dataset**
 
 在 `_build_temporal_batch()` 中调用 `build_event_supervision()`；任务裁剪只映射
 输入任务索引，不改变逐卫星事件标签。
 
-- [ ] **Step 4: 验证 GREEN 并提交**
+- [x] **Step 4: 验证 GREEN 并提交**
 
 Run:
 

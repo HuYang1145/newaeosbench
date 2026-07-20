@@ -50,7 +50,10 @@ from constellation import (
 from constellation.data import Constellation, TaskSet
 
 from .constants import TIME_SCALE
-from .multi_horizon_edge_labels import build_batched_edge_outcomes
+from .multi_horizon_edge_labels import (
+    build_batched_edge_outcomes,
+    build_event_supervision,
+)
 from .registries import ConstellationDatasetRegistry
 from .temporal_history import build_prefix_history
 
@@ -105,6 +108,9 @@ class TemporalBatch(NamedTuple):
     run_lengths: torch.Tensor
     switch_count_30: torch.Tensor
     switch_count_60: torch.Tensor
+    event_continue: torch.Tensor
+    event_duration_index: torch.Tensor
+    event_duration_observed: torch.Tensor
     outcome_valid: torch.Tensor
     visible_next: torch.Tensor
     progress_next: torch.Tensor
@@ -545,6 +551,7 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             task_durations=task_durations,
             horizons=horizons,
         )
+        event_targets = build_event_supervision(actions)
 
         def stack_horizons(name: str) -> torch.Tensor:
             return torch.stack([
@@ -559,6 +566,11 @@ class Dataset(torch.utils.data.Dataset[Batch]):
             run_lengths=history.run_lengths,
             switch_count_30=history.switch_count_30,
             switch_count_60=history.switch_count_60,
+            event_continue=event_targets.continue_next[indices],
+            event_duration_index=event_targets.duration_index[indices],
+            event_duration_observed=(
+                event_targets.duration_observed[indices]
+            ),
             outcome_valid=outcomes.valid[indices],
             visible_next=outcomes.visible_next[indices],
             progress_next=outcomes.progress_next[indices],

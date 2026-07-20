@@ -100,6 +100,13 @@ def test_temporal_dataset_builds_history_and_outcome_for_sampled_actions() -> No
     assert batch.temporal.previous_was_idle[:, 0].tolist() == [True, False, False]
     assert batch.temporal.run_lengths[:, 0].tolist() == [1, 1, 2]
     assert batch.temporal.outcome_valid[:, 0].tolist() == [True, True, False]
+    assert batch.temporal.event_continue[:, 0].tolist() == [
+        True, False, False,
+    ]
+    assert batch.temporal.event_duration_index[:, 0].tolist() == [0, 0, 0]
+    assert batch.temporal.event_duration_observed[:, 0].tolist() == [
+        True, True, False,
+    ]
     assert batch.temporal.horizons.tolist() == [1, 3]
     assert batch.temporal.visible.shape == (3, 1, 2)
     assert batch.temporal.visible_observed.shape == (3, 1, 2)
