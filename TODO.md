@@ -111,11 +111,35 @@ Stage3 Actor，并令 `temporal_residual_scale=0`，因此训练不会改变现�
   均被 Slurm 外的 `VLLM::Worker_TP0–TP3` 各占约 21.5 GiB，原继承的
   `batch_size=48` 还需分配 1.45 GiB，GPU 0 当时仅余 1.37 GiB。没有生成 M2
   checkpoint，也不是标签或模型数值失败。
-- [ ] 通过 Slurm 在 `local-10` 运行 10k event-head 训练，并记录 job、日志和
-  checkpoint；资源受限重试使用 `batch_size=8` 和
-  `constraint_batch_size=8`。训练 loss 下降只证明可拟合，不能当作调度性能提升。
-- [ ] 训练完成后先审计未见 scene 的 continue/duration/outcome 指标，再把学到的
-  终止/持续时间接入 M1 runtime 做小规模同场景 Val；在此之前不运行 Test。
+- [x] 资源受限 Slurm job `586` 使用 `batch_size=8`、
+  `constraint_batch_size=8` 完成 10k，耗时 `01:01:41`，exit `0:0`。checkpoint
+  为 `work_dirs/event_heads_m2_10k/checkpoints/iter_10000/model.pth`（350 MiB）。
+  日志采样的前/后 1k 平均总 loss 为 `5.1662 → 3.4533`，但这只证明可拟合。
+- [x] CPU Slurm job `597` 对 `1k/2k/5k/10k` 做 Val Seen/Unseen 各 8 场离线
+  评价。10k 的 continue balanced accuracy 为 `0.8652/0.8765`，stop recall 为
+  `0.9062/0.9250`；duration balanced accuracy 为 `0.4844/0.4890`，五档均有
+  预测；15 个 outcome 窗口的平均 balanced accuracy 为 `0.8843/0.8799`。
+- [x] M2-C 已把 10k continue/duration 接入 M1 runtime：Stage3 仍先选任务，
+  `continue_probability < 0.5` 时承诺 1 秒，否则使用五档 duration；idle 固定
+  1 秒，`temporal_residual_scale=0`，不改变任务 logits。
+- [x] train scene 0 的完整 3,600 秒 Basilisk smoke（Slurm job `598`）未通过：
+  `CS_paper 3.6409 → 3.9429`，`PC_Wh 150.29 → 187.62`，三项完成指标均下降；
+  仅 `TAT_s 425.33 → 328.07`。因此不扩大 Val，不运行 Test。
+
+M2-C 单场行为对照：
+
+| 方案 | CR/% | PCR/% | WCR/% | TAT_s | PC_Wh | CS_paper | task 1 s | model calls |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Stage3 逐秒 baseline | 64.44 | 68.62 | 64.76 | 425.33 | 150.29 | 3.6409 | 未记录 | 未记录 |
+| M1 固定 task 5 s | 65.56 | 67.89 | 69.59 | 343.58 | 173.18 | 3.7189 | 0.00% | 3,580 |
+| M2 learned / threshold 0.5 | 61.11 | 66.57 | 62.99 | 328.07 | 187.62 | 3.9429 | 72.61% | 3,575 |
+
+离线 Val 的 predicted-continue 约为 `82%`，但 M2 自己滚动生成时只有 `28.04%`
+的任务事件通过 continue gate，平均 continue probability 为 `0.4398`。这说明
+旧专家轨迹上的分类能力没有稳定迁移到策略访问的新状态；同时 1,445 个任务事件被
+承诺 60 秒，进一步推高功耗。当前结论是“M2 标签、训练和事件推理闭环完成，但
+直接行为克隆式承诺策略失败”。下一步若进入 M3，应使用事件点受控局部结果标签纠正
+stay/switch 与时长，而不是继续扩大 M2 Val、扫单场阈值或直接进入 PPO。
 
 重要边界：continue/duration 是历史专家实际行为标签，outcome 是执行后的事实标签；
 它们都不是“同一状态下哪个候选更好”的反事实标签。因此 M2 可以学习何时持续和

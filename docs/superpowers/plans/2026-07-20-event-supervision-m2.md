@@ -235,12 +235,12 @@ Expected: 全部通过。
 明确区分行为标签与事实结果标签，记录 checkpoint、annotation、样本数、loss 和冻结
 参数检查。
 
-- [ ] **Step 2: 应用训练门槛**
+- [x] **Step 2: 应用训练门槛**
 
 只有标签非退化、真实 batch 可训练且资源可用时才提交 Slurm；否则停止在 M2-A，
 先修复标签。
 
-- [ ] **Step 3: 文档与回归检查**
+- [x] **Step 3: 文档与回归检查**
 
 Run:
 
@@ -279,7 +279,7 @@ censored duration 和未观测 horizon 不进入对应指标。
 包装脚本只读取 `val_seen/val_unseen` 旧轨迹，不启动 Basilisk，不使用 Test；
 每场固定采样 32 个时间步，跨场景先合并原始预测再计算指标。
 
-- [ ] **Step 5: 训练完成后运行并记录 checkpoint 选择**
+- [x] **Step 5: 训练完成后运行并记录 checkpoint 选择**
 
 先判断 stop recall、duration balanced accuracy 与五档预测分布，再看 outcome；
 训练 loss 下降或多数类 accuracy 高均不能单独通过验收。
@@ -314,7 +314,7 @@ CLI 要求 fixed commitment 与 `--event-learned-commitment` 二选一；已有�
 新增 continue 概率、gate 通过率和 duration proposal 分布；准备 train scene 0、
 完整 3,600 秒、CPU Slurm smoke，不使用 Test。
 
-- [ ] **Step 5: 运行单场 Basilisk 并应用停止门槛**
+- [x] **Step 5: 运行单场 Basilisk 并应用停止门槛**
 
 完整报告 `CR/PCR/WCR/TAT_s/PC_Wh/CS_paper`、任务一秒承诺率、五档分布、模型调用和
 中断原因。若任务承诺塌缩为单一档或 `CS_paper` 明显恶化，不扩大 Val。
