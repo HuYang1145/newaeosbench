@@ -177,12 +177,12 @@ Expected: PASS。
 - Create: `scripts/train_event_heads_m2_slurm.sh`
 - Create: `tests/test_event_heads_m2_scripts.py`
 
-- [ ] **Step 1: TDD 实现审计汇总**
+- [x] **Step 1: TDD 实现审计汇总**
 
 输出 continue 正负数、五档 duration 数量、duration censor 比例，以及既有 outcome
 覆盖。工具只读取轨迹与 taskset，不运行 Basilisk。
 
-- [ ] **Step 2: 对少量真实 Stage3 annotation 运行审计**
+- [x] **Step 2: 对少量真实 Stage3 annotation 运行审计**
 
 Run:
 
@@ -196,17 +196,17 @@ Run:
 
 Expected: 输出非空且五档计数之和等于 observed duration 数量。
 
-- [ ] **Step 3: 完成真实 Dataset 单 batch forward/backward/step**
+- [x] **Step 3: 完成真实 Dataset 单 batch forward/backward/step**
 
 使用 Stage3-200k checkpoint，在 CPU 或空闲 GPU 上确认 loss 有限，只有新模块参数
 变化。
 
-- [ ] **Step 4: 准备 Slurm 包装**
+- [x] **Step 4: 准备 Slurm 包装**
 
 脚本使用 `aeos` 环境、`local-10/lab_team`、独立日志和
 `work_dirs/event_heads_m2_10k`，正式运行前检查 checkpoint。
 
-- [ ] **Step 5: 回归并提交**
+- [x] **Step 5: 回归并提交**
 
 Run:
 

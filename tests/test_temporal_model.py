@@ -397,6 +397,35 @@ def test_m2_event_head_config_freezes_actor_without_residual() -> None:
     assert model.time_loss_weight == 0.
     assert model.temporal_continue_loss_weight == 1.
     assert model.temporal_duration_loss_weight == 1.
+    assert model.temporal_continue_positive_weight == 0.005588996
+    assert model.temporal_duration_class_weights == (
+        2.659873,
+        1.090517,
+        0.758177,
+        0.407495,
+        0.083938,
+    )
+    assert model.temporal_visible_positive_weights == (
+        12.598763,
+        9.810389,
+        7.202741,
+        4.965879,
+        2.764055,
+    )
+    assert model.temporal_progress_positive_weights == (
+        5.173770,
+        4.180250,
+        3.068755,
+        2.119655,
+        1.188129,
+    )
+    assert model.temporal_completion_positive_weights == (
+        294.956978,
+        57.670361,
+        18.304235,
+        8.480025,
+        3.602941,
+    )
     assert config.trainer.dataset.include_temporal_history is True
     assert config.trainer.dataset.temporal_horizons == (5, 15, 30, 60)
     assert config.trainer.dataset.annotation_file == (

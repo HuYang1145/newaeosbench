@@ -30,6 +30,38 @@ model = {
     'temporal_event_time_loss_weight': 1.0,
     'temporal_continue_loss_weight': 1.0,
     'temporal_duration_loss_weight': 1.0,
+    # 2026-07-20 对 Stage3 annotation 前 256 场、15,402,489 条非空边
+    # 的审计结果。continue 使用 stop/continue；duration 权重为归一化逆频率。
+    'temporal_continue_positive_weight': 0.005588996,
+    'temporal_duration_class_weights': (
+        2.659873,
+        1.090517,
+        0.758177,
+        0.407495,
+        0.083938,
+    ),
+    # 顺序为 next、5s、15s、30s、60s 的 neg/pos。
+    'temporal_visible_positive_weights': (
+        12.598763,
+        9.810389,
+        7.202741,
+        4.965879,
+        2.764055,
+    ),
+    'temporal_progress_positive_weights': (
+        5.173770,
+        4.180250,
+        3.068755,
+        2.119655,
+        1.188129,
+    ),
+    'temporal_completion_positive_weights': (
+        294.956978,
+        57.670361,
+        18.304235,
+        8.480025,
+        3.602941,
+    ),
 }
 
 trainer = _deepcopy(_stage3_trainer)
