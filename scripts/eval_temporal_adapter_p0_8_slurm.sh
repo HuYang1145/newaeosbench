@@ -11,7 +11,11 @@
 
 set -euo pipefail
 
-CODE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  CODE_ROOT="${SLURM_SUBMIT_DIR}"
+else
+  CODE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 STATE_ROOT="${AEOS_STATE_ROOT:-/home/hy/data/newaeosbench}"
 
 cd "${CODE_ROOT}"

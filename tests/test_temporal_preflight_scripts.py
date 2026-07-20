@@ -44,4 +44,5 @@ def test_temporal_val8_slurm_wrapper_requests_resources_and_reuses_eval() -> Non
     assert '#SBATCH --account=lab_team' in source
     assert '#SBATCH --partition=local-10' in source
     assert 'temporal_adapter_p0_eval8_slurm_%j.log' in source
+    assert 'SLURM_SUBMIT_DIR' in source
     assert 'scripts/eval_temporal_adapter_p0_8.sh' in source
