@@ -29,3 +29,18 @@ def test_temporal_val8_wrapper_enables_adapter_for_both_val_splits() -> None:
     assert '--temporal-residual-scale 0.25' in source
     assert 'temporal_adapter_p0_10k_val8.json' in source
     assert 'DRY_RUN' in source
+
+
+def test_temporal_val8_slurm_wrapper_requests_resources_and_reuses_eval() -> None:
+    path = ROOT / 'scripts/eval_temporal_adapter_p0_8_slurm.sh'
+    source = path.read_text()
+
+    assert '#SBATCH --job-name=aeos_temporal_eval8' in source
+    assert '#SBATCH --nodes=1' in source
+    assert '#SBATCH --gres=gpu:1' in source
+    assert '#SBATCH --cpus-per-task=24' in source
+    assert '#SBATCH --mem=96G' in source
+    assert '#SBATCH --time=02:00:00' in source
+    assert '#SBATCH --account=lab_team' in source
+    assert 'temporal_adapter_p0_eval8_slurm_%j.log' in source
+    assert 'scripts/eval_temporal_adapter_p0_8.sh' in source

@@ -185,17 +185,16 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- Temporal Adapter P0-B 10k 已于 2026-07-19 22:15 EDT 启动：分支
-  `codex/p0-causal-history-adapter`，训练代码提交 `f70a8b0`，使用本机 GPU 0-3，
-  `tmux=aeos_temporal_p0_10k`，命令
-  `bash scripts/train_temporal_adapter_p0_10k.sh`。
+- Temporal Adapter P0-B 10k 已于 2026-07-20 00:42 EDT 完成：分支
+  `codex/p0-causal-history-adapter`，训练代码提交 `f70a8b0`，共完成 10,000 iter。
 - P0-B 加载 Stage3-200k checkpoint：
   `work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`；训练日志：
   `work_dirs/eval_logs/temporal_adapter_p0_10k_train.log`；输出目录：
-  `work_dirs/temporal_adapter_p0_10k/`；预期最终 checkpoint：
+  `work_dirs/temporal_adapter_p0_10k/`；最终 checkpoint：
   `work_dirs/temporal_adapter_p0_10k/checkpoints/iter_10000/model.pth`。
-- 当前训练已通过 iter 50，首条日志 ETA 约 2 小时 29 分；训练完成前不启动并行
-  Temporal Adapter 实验或正式 Val。
+- 下一步仅通过 Slurm 运行 Val Seen/Unseen 各 8 场：包装脚本
+  `scripts/eval_temporal_adapter_p0_8_slurm.sh`，账户 `lab_team`，申请
+  `1 GPU / 24 CPU / 96G / 2h`；不再直接占用本机 GPU。
 - P0 第一阶段训练已在 `server-10` 直接完成，不经过 Slurm；`groupA/groupB` 权限
   不影响本机实验。
 - 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；最终 checkpoint：
