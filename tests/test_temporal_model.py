@@ -253,6 +253,30 @@ def test_temporal_joint_model_backward_and_step_only_update_adapter() -> None:
         assert key in memo
 
 
+def test_temporal_joint_model_accepts_prefetched_nested_tuple() -> None:
+    model = JointModel(
+        **_tiny_model_kwargs(),
+        use_temporal_adapter=True,
+        temporal_adapter_hidden_width=16,
+        temporal_horizons=(1,),
+        freeze_temporal_backbone=True,
+        feasibility_loss_weight=0.,
+        time_loss_weight=0.,
+        assignment_loss_weight=1.,
+        temporal_visible_loss_weight=1.,
+        temporal_progress_loss_weight=1.,
+        temporal_completion_loss_weight=1.,
+        temporal_event_time_loss_weight=1.,
+    )
+    batch = _joint_batch()._replace(
+        temporal=tuple(_temporal_targets()),
+    )
+
+    memo = model(type('Runner', (), {'iter_': 0})(), batch, {})
+
+    assert torch.isfinite(memo['loss'])
+
+
 def test_temporal_adapter_pilot_config_freezes_stage3_backbone() -> None:
     config = PyConfig.load(
         'constellation/new_transformers/config_temporal_adapter_p0.py',

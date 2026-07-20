@@ -11,7 +11,7 @@ from todd.patches.torch import Sequential
 from todd.models.losses import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from todd.registries import InitWeightsMixin
 from constellation.data import SensorType
-from .dataset import Batch, JointBatch
+from .dataset import Batch, JointBatch, TemporalBatch
 from .feasibility import (
     apply_feasibility_penalty,
     apply_feasibility_threshold,
@@ -647,6 +647,8 @@ class Model(nn.Module):
         temporal = batch.temporal
         if temporal is None:
             return None
+        if not isinstance(temporal, TemporalBatch):
+            temporal = TemporalBatch(*temporal)
         return TemporalHistoryTensors(
             previous_task_indices=temporal.previous_task_indices,
             previous_task_available=temporal.previous_task_available,
@@ -875,6 +877,11 @@ class JointModel(Model):
         tensorboard: TensorBoardCallback | None = memo.get('tensorboard')
 
         batch = JointBatch(*batch)  # for PrefetchDataLoader
+        if batch.temporal is not None and not isinstance(
+            batch.temporal,
+            TemporalBatch,
+        ):
+            batch = batch._replace(temporal=TemporalBatch(*batch.temporal))
         if not self._train_duration_head_only:
             memo['actions_task_id'] = einops.rearrange(
                 batch.actions_task_id + 1,
