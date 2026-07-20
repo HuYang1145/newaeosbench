@@ -249,3 +249,37 @@ git diff --check -- TODO.md 改进日志.md
 ```
 
 Expected: 无空白错误，未把 M2-A 写成性能提升。
+
+### Task 7：M2-B checkpoint 离线验收
+
+**Files:**
+- Create: `tools/evaluate_event_heads_m2.py`
+- Create: `scripts/evaluate_event_heads_m2_offline_slurm.sh`
+- Create: `tests/test_evaluate_event_heads_m2.py`
+- Modify: `tests/test_event_heads_m2_scripts.py`
+
+- [x] **Step 1: TDD 实现不平衡分类指标**
+
+continue 同时报告普通 accuracy、balanced accuracy、两类 precision/recall 和混淆
+矩阵；duration 报告五档混淆矩阵、每类召回、balanced accuracy 和预测分布。若
+二分类评价范围缺一类，balanced accuracy 为 `null`，不伪造高分。
+
+- [x] **Step 2: 抽取实际执行且已观测的边**
+
+按 expert `actions_task_id` gather continue、duration 与 outcome logits；idle、
+censored duration 和未观测 horizon 不进入对应指标。
+
+- [x] **Step 3: 真实 checkpoint 单场 smoke**
+
+使用 `iter_2000`、`val_seen` scene 238、每场 8 个固定随机时间步在 CPU 上完成
+前向并输出 JSON。该结果只验证接口，不作泛化判断。
+
+- [x] **Step 4: 准备 1k/2k/5k/10k 的 8+8 Slurm 离线评价**
+
+包装脚本只读取 `val_seen/val_unseen` 旧轨迹，不启动 Basilisk，不使用 Test；
+每场固定采样 32 个时间步，跨场景先合并原始预测再计算指标。
+
+- [ ] **Step 5: 训练完成后运行并记录 checkpoint 选择**
+
+先判断 stop recall、duration balanced accuracy 与五档预测分布，再看 outcome；
+训练 loss 下降或多数类 accuracy 高均不能单独通过验收。
