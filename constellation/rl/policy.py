@@ -5,6 +5,9 @@ import todd
 import torch
 from constellation.new_transformers import Model as ActorModel
 from constellation.new_transformers.model import GLOBALS
+from constellation.new_transformers.temporal_adapter import (
+    TemporalHistoryTensors,
+)
 from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -27,6 +30,12 @@ class Observation(TypedDict):
     constellation_data: torch.Tensor  # b x MAX_NUM_SATELLITES x SATELLITE_DIM
     tasks_sensor_type: torch.Tensor  # b x (MAX_NUM_TASKS x len(SensorType)), one-hot # noqa: E501
     tasks_data: torch.Tensor  # b x MAX_NUM_TASKS x TASK_DIM
+    previous_task_index: torch.Tensor  # b x MAX_NUM_SATELLITES
+    previous_task_available: torch.Tensor  # b x MAX_NUM_SATELLITES
+    previous_was_idle: torch.Tensor  # b x MAX_NUM_SATELLITES
+    run_length: torch.Tensor  # b x MAX_NUM_SATELLITES
+    switch_count_30: torch.Tensor  # b x MAX_NUM_SATELLITES
+    switch_count_60: torch.Tensor  # b x MAX_NUM_SATELLITES
 
 
 class Batch(NamedTuple):
@@ -38,6 +47,12 @@ class Batch(NamedTuple):
     tasks_sensor_type: torch.Tensor
     tasks_data: torch.Tensor
     tasks_mask: torch.Tensor
+    previous_task_indices: torch.Tensor
+    previous_task_available: torch.Tensor
+    previous_was_idle: torch.Tensor
+    run_lengths: torch.Tensor
+    switch_count_30: torch.Tensor
+    switch_count_60: torch.Tensor
 
 
 class FeatureExtractor(BaseFeaturesExtractor):
@@ -98,6 +113,25 @@ class FeatureExtractor(BaseFeaturesExtractor):
         for i, n in enumerate(num_tasks):
             tasks_mask[i, :n] = True
 
+        previous_task_indices = observation['previous_task_index'][
+            :, :max_num_satellites
+        ].int()
+        previous_task_available = observation[
+            'previous_task_available'
+        ][:, :max_num_satellites].bool()
+        previous_was_idle = observation['previous_was_idle'][
+            :, :max_num_satellites
+        ].bool()
+        run_lengths = observation['run_length'][
+            :, :max_num_satellites
+        ].float()
+        switch_count_30 = observation['switch_count_30'][
+            :, :max_num_satellites
+        ].float()
+        switch_count_60 = observation['switch_count_60'][
+            :, :max_num_satellites
+        ].float()
+
         return Batch(
             time_step=time_step,
             constellation_sensor_type=constellation_sensor_type,
@@ -107,6 +141,12 @@ class FeatureExtractor(BaseFeaturesExtractor):
             tasks_sensor_type=tasks_sensor_type,
             tasks_data=tasks_data,
             tasks_mask=tasks_mask,
+            previous_task_indices=previous_task_indices,
+            previous_task_available=previous_task_available,
+            previous_was_idle=previous_was_idle,
+            run_lengths=run_lengths,
+            switch_count_30=switch_count_30,
+            switch_count_60=switch_count_60,
         )
 
 
@@ -136,7 +176,17 @@ class ActorCritic(nn.Module):
     def forward_actor(self, batch: Batch) -> torch.Tensor:
         if todd.Store.cuda:
             batch = Batch(*[tensor.cuda() for tensor in batch])
-        logits = self.actor.predict(*batch)
+        logits = self.actor.predict(
+            *batch[:8],
+            temporal_history=TemporalHistoryTensors(
+                previous_task_indices=batch.previous_task_indices,
+                previous_task_available=batch.previous_task_available,
+                previous_was_idle=batch.previous_was_idle,
+                run_lengths=batch.run_lengths,
+                switch_count_30=batch.switch_count_30,
+                switch_count_60=batch.switch_count_60,
+            ),
+        )
 
         padding = logits.new_full(
             (logits.shape[0], MAX_NUM_SATELLITES, MAX_NUM_TASKS),
@@ -150,7 +200,7 @@ class ActorCritic(nn.Module):
     def forward_critic(self, batch: Batch) -> torch.Tensor:
         if todd.Store.cuda:
             batch = Batch(*[tensor.cuda() for tensor in batch])
-        return self.critic(*batch)
+        return self.critic(*batch[:8])
 
 
 class Policy(ActorCriticPolicy):

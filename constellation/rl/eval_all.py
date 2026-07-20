@@ -304,6 +304,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=32,
     )
+    parser.add_argument('--use-temporal-adapter', action='store_true')
+    parser.add_argument(
+        '--temporal-adapter-hidden-width',
+        type=int,
+        default=64,
+    )
+    parser.add_argument(
+        '--temporal-residual-scale',
+        type=float,
+        default=0.25,
+    )
     parser.add_argument('--owner-assignment', action='store_true')
     parser.add_argument(
         '--owner-continuation-bonus',
@@ -322,6 +333,9 @@ def build_policy_kwargs(
     feasibility_penalty_strength: float | None,
     use_assignment_head: bool = False,
     assignment_head_hidden_width: int = 32,
+    use_temporal_adapter: bool = False,
+    temporal_adapter_hidden_width: int = 64,
+    temporal_residual_scale: float = 0.25,
 ) -> dict[str, Any]:
     kwargs = dict(
         load_model_from=load_model_from,
@@ -338,6 +352,13 @@ def build_policy_kwargs(
             use_assignment_head=True,
             assignment_head_hidden_width=assignment_head_hidden_width,
         )
+    if use_temporal_adapter:
+        kwargs['actor_model_kwargs'].update(
+            use_temporal_adapter=True,
+            temporal_adapter_hidden_width=temporal_adapter_hidden_width,
+            temporal_horizons=(5, 15, 30, 300),
+            temporal_residual_scale=temporal_residual_scale,
+        )
     return kwargs
 
 
@@ -353,11 +374,14 @@ def build_eval_metadata(
     coordination_diagnostics_top_k: int | None,
     use_assignment_head: bool = False,
     assignment_head_hidden_width: int = 32,
+    use_temporal_adapter: bool = False,
+    temporal_adapter_hidden_width: int = 64,
+    temporal_residual_scale: float = 0.25,
     owner_assignment: bool = False,
     owner_continuation_bonus: float = 0.25,
 ) -> dict[str, Any]:
     """记录影响评估可复现性的关键参数。"""
-    return dict(
+    metadata = dict(
         split=split,
         world_size=world_size,
         max_scenes=max_scenes,
@@ -371,6 +395,13 @@ def build_eval_metadata(
         owner_assignment=owner_assignment,
         owner_continuation_bonus=owner_continuation_bonus,
     )
+    if use_temporal_adapter:
+        metadata.update(
+            use_temporal_adapter=True,
+            temporal_adapter_hidden_width=temporal_adapter_hidden_width,
+            temporal_residual_scale=temporal_residual_scale,
+        )
+    return metadata
 
 
 '''
@@ -390,6 +421,10 @@ def main() -> None:
         raise ValueError('coordination diagnostics top-k must be positive')
     if args.assignment_head_hidden_width <= 0:
         raise ValueError('assignment head hidden width must be positive')
+    if args.temporal_adapter_hidden_width <= 0:
+        raise ValueError('temporal adapter hidden width must be positive')
+    if args.temporal_residual_scale < 0:
+        raise ValueError('temporal residual scale must be non-negative')
     if args.owner_continuation_bonus < 0:
         raise ValueError('owner continuation bonus must be non-negative')
     config = PyConfig.load(args.config, **args.config_options)
@@ -415,6 +450,9 @@ def main() -> None:
         ),
         use_assignment_head=args.use_assignment_head,
         assignment_head_hidden_width=args.assignment_head_hidden_width,
+        use_temporal_adapter=args.use_temporal_adapter,
+        temporal_adapter_hidden_width=args.temporal_adapter_hidden_width,
+        temporal_residual_scale=args.temporal_residual_scale,
         owner_assignment=args.owner_assignment,
         owner_continuation_bonus=args.owner_continuation_bonus,
     )
@@ -456,6 +494,11 @@ def main() -> None:
                 assignment_head_hidden_width=(
                     args.assignment_head_hidden_width
                 ),
+                use_temporal_adapter=args.use_temporal_adapter,
+                temporal_adapter_hidden_width=(
+                    args.temporal_adapter_hidden_width
+                ),
+                temporal_residual_scale=args.temporal_residual_scale,
             ),
             tensorboard_log=str(work_dir),
             seed=args.seed,

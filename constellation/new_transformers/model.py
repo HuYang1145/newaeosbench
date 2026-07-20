@@ -11,7 +11,7 @@ from todd.patches.torch import Sequential
 from todd.models.losses import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from todd.registries import InitWeightsMixin
 from constellation.data import SensorType
-from .dataset import Batch, JointBatch
+from .dataset import Batch, JointBatch, TemporalBatch
 from .feasibility import (
     apply_feasibility_penalty,
     apply_feasibility_threshold,
@@ -25,6 +25,13 @@ from constellation import MAX_TIME_STEP
 from torch.distributions import Categorical
 from .assignment import AssignmentAuxiliaryLoss, BipartiteAssignmentHead
 from .constants import SATELLITE_DIM, TASK_DIM, TIME_SCALE
+from .temporal_adapter import (
+    TemporalAdapter,
+    TemporalAdapterOutput,
+    TemporalHistoryTensors,
+    TemporalOutcomePositiveWeights,
+    temporal_outcome_loss,
+)
 
 GLOBALS = dict()
 
@@ -193,7 +200,7 @@ class Decoder(InitWeightsMixin, nn.Module):
         self._norm = nn.LayerNorm(width)
 
         if return_logits:
-            self._null_task = nn.Parameter(torch.empty(width))
+            self._null_task = nn.Parameter(torch.zeros(width))
 
     @property
     def return_logits(self) -> bool:
@@ -302,6 +309,10 @@ class Transformer(nn.Module):
         feasibility_penalty_strength: float | None = None,
         use_assignment_head: bool = False,
         assignment_head_hidden_width: int = 32,
+        use_temporal_adapter: bool = False,
+        temporal_adapter_hidden_width: int = 64,
+        temporal_horizons: tuple[int, ...] = (5, 15, 30, 300),
+        temporal_residual_scale: float = 1.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -350,6 +361,9 @@ class Transformer(nn.Module):
         self._feasibility_penalty_threshold = feasibility_penalty_threshold
         self._feasibility_penalty_strength = feasibility_penalty_strength
         self._use_assignment_head = use_assignment_head
+        if temporal_residual_scale < 0:
+            raise ValueError('temporal_residual_scale must be non-negative')
+        self._temporal_residual_scale = temporal_residual_scale
         if use_assignment_head and not return_logits:
             raise ValueError('assignment head requires task logits')
 
@@ -392,6 +406,15 @@ class Transformer(nn.Module):
             )
             if use_assignment_head else None
         )
+        self._temporal_adapter = (
+            TemporalAdapter(
+                satellite_width=decoder_width,
+                task_width=encoder_width,
+                hidden_width=temporal_adapter_hidden_width,
+                horizons=temporal_horizons,
+            )
+            if use_temporal_adapter else None
+        )
 
         self._time_model.requires_grad_(use_constraint_module)
         self._encoder.requires_grad_(True)
@@ -409,7 +432,18 @@ class Transformer(nn.Module):
         tasks_sensor_type: torch.Tensor,
         tasks_data: torch.Tensor,
         tasks_mask: torch.Tensor,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        *,
+        temporal_history: TemporalHistoryTensors | None = None,
+        return_temporal_output: bool = False,
+    ) -> (
+        torch.Tensor
+        | tuple[torch.Tensor, torch.Tensor]
+        | tuple[
+            torch.Tensor,
+            torch.Tensor,
+            TemporalAdapterOutput | None,
+        ]
+    ):
         if isinstance(time_steps, torch.Tensor):
             time_steps = time_steps.flatten().tolist()
         else:
@@ -490,6 +524,30 @@ class Transformer(nn.Module):
                 tasks_mask,
             )
 
+        temporal_output = None
+        if self._temporal_adapter is not None:
+            if temporal_history is None:
+                raise ValueError(
+                    'temporal history is required when the adapter is enabled'
+                )
+            temporal_output = self._temporal_adapter(
+                satellite_features=satellite_features,
+                task_features=hidden_states,
+                null_logits=null_logits,
+                task_logits=logits,
+                satellite_mask=constellation_mask,
+                task_mask=tasks_mask,
+                history=temporal_history,
+            )
+            null_logits = null_logits + self._temporal_residual_scale * (
+                temporal_output.null_delta.tanh()
+            )
+            logits = logits + self._temporal_residual_scale * (
+                temporal_output.task_delta.tanh()
+            )
+
+        if return_temporal_output:
+            return null_logits, logits, temporal_output
         return null_logits, logits
 
 
@@ -533,6 +591,11 @@ class Model(nn.Module):
         use_assignment_head: bool = False,
         assignment_head_hidden_width: int = 32,
         freeze_assignment_backbone: bool = False,
+        use_temporal_adapter: bool = False,
+        temporal_adapter_hidden_width: int = 64,
+        temporal_horizons: tuple[int, ...] = (5, 15, 30, 300),
+        temporal_residual_scale: float = 1.0,
+        freeze_temporal_backbone: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -554,7 +617,15 @@ class Model(nn.Module):
             feasibility_penalty_strength=feasibility_penalty_strength,
             use_assignment_head=use_assignment_head,
             assignment_head_hidden_width=assignment_head_hidden_width,
+            use_temporal_adapter=use_temporal_adapter,
+            temporal_adapter_hidden_width=temporal_adapter_hidden_width,
+            temporal_horizons=temporal_horizons,
+            temporal_residual_scale=temporal_residual_scale,
         )
+        if freeze_assignment_backbone and freeze_temporal_backbone:
+            raise ValueError(
+                'assignment and temporal backbone freeze modes are exclusive'
+            )
         if freeze_assignment_backbone:
             if self._transformer._assignment_head is None:
                 raise ValueError(
@@ -562,12 +633,58 @@ class Model(nn.Module):
                 )
             self._transformer.requires_grad_(False)
             self._transformer._assignment_head.requires_grad_(True)
+        if freeze_temporal_backbone:
+            if self._transformer._temporal_adapter is None:
+                raise ValueError(
+                    'freezing the backbone requires the temporal adapter'
+                )
+            self._transformer.requires_grad_(False)
+            self._transformer._temporal_adapter.requires_grad_(True)
         self._ce_loss = CrossEntropyLoss()
 
-    def predict(self, *args, **kwargs) -> torch.Tensor:
-        null_logits, logits = self._transformer(*args, **kwargs)
+    @staticmethod
+    def _history_from_batch(batch) -> TemporalHistoryTensors | None:
+        temporal = batch.temporal
+        if temporal is None:
+            return None
+        if not isinstance(temporal, TemporalBatch):
+            temporal = TemporalBatch(*temporal)
+        return TemporalHistoryTensors(
+            previous_task_indices=temporal.previous_task_indices,
+            previous_task_available=temporal.previous_task_available,
+            previous_was_idle=temporal.previous_was_idle,
+            run_lengths=temporal.run_lengths,
+            switch_count_30=temporal.switch_count_30,
+            switch_count_60=temporal.switch_count_60,
+        )
+
+    def _predict_with_temporal_output(
+        self,
+        *args,
+        temporal_history: TemporalHistoryTensors | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, TemporalAdapterOutput | None]:
+        null_logits, logits, temporal_output = self._transformer(
+            *args,
+            temporal_history=temporal_history,
+            return_temporal_output=True,
+            **kwargs,
+        )
         null_logits = einops.rearrange(null_logits, 'b ns -> b ns 1')
         logits = torch.cat((null_logits, logits), -1)
+        return logits, temporal_output
+
+    def predict(
+        self,
+        *args,
+        temporal_history: TemporalHistoryTensors | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        logits, _ = self._predict_with_temporal_output(
+            *args,
+            temporal_history=temporal_history,
+            **kwargs,
+        )
         return logits
 
     def forward(
@@ -594,6 +711,7 @@ class Model(nn.Module):
             batch.tasks_sensor_type,
             batch.tasks_data,
             batch.tasks_mask,
+            temporal_history=self._history_from_batch(batch),
         )
         memo['logits'] = einops.rearrange(logits, 'b ns nt -> (b ns) nt')
 
@@ -631,6 +749,13 @@ class JointModel(Model):
         collision_loss_weight: float = 0.0,
         coverage_loss_weight: float = 0.0,
         train_duration_head_only: bool = False,
+        temporal_visible_loss_weight: float = 0.0,
+        temporal_progress_loss_weight: float = 0.0,
+        temporal_completion_loss_weight: float = 0.0,
+        temporal_event_time_loss_weight: float = 0.0,
+        temporal_visible_positive_weights: tuple[float, ...] | None = None,
+        temporal_progress_positive_weights: tuple[float, ...] | None = None,
+        temporal_completion_positive_weights: tuple[float, ...] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -656,6 +781,61 @@ class JointModel(Model):
         self._collision_loss_weight = collision_loss_weight
         self._coverage_loss_weight = coverage_loss_weight
         self._train_duration_head_only = train_duration_head_only
+        self._temporal_visible_loss_weight = temporal_visible_loss_weight
+        self._temporal_progress_loss_weight = temporal_progress_loss_weight
+        self._temporal_completion_loss_weight = (
+            temporal_completion_loss_weight
+        )
+        self._temporal_event_time_loss_weight = (
+            temporal_event_time_loss_weight
+        )
+        temporal_adapter = self._transformer._temporal_adapter
+        expected_positive_weights = (
+            None
+            if temporal_adapter is None
+            else 1 + len(temporal_adapter.horizons)
+        )
+        positive_weight_groups = (
+            ('temporal_visible_positive_weights',
+             temporal_visible_positive_weights),
+            ('temporal_progress_positive_weights',
+             temporal_progress_positive_weights),
+            ('temporal_completion_positive_weights',
+             temporal_completion_positive_weights),
+        )
+        provided_positive_weights = [
+            values is not None for _, values in positive_weight_groups
+        ]
+        if any(provided_positive_weights) and not all(
+            provided_positive_weights
+        ):
+            raise ValueError(
+                'temporal positive weights must provide visible, progress '
+                'and completion together'
+            )
+        for name, values in positive_weight_groups:
+            if values is not None and (
+                expected_positive_weights is None
+                or len(values) != expected_positive_weights
+                or any(
+                    not torch.isfinite(torch.tensor(value))
+                    or value <= 0
+                    for value in values
+                )
+            ):
+                raise ValueError(
+                    f'{name} must contain one positive value for next and '
+                    'each temporal horizon'
+                )
+            self.register_buffer(
+                f'_{name}',
+                (
+                    None
+                    if values is None
+                    else torch.tensor(values, dtype=torch.float)
+                ),
+                persistent=False,
+            )
         self._assignment_auxiliary_loss = AssignmentAuxiliaryLoss()
         if train_duration_head_only:
             self.requires_grad_(False)
@@ -697,13 +877,18 @@ class JointModel(Model):
         tensorboard: TensorBoardCallback | None = memo.get('tensorboard')
 
         batch = JointBatch(*batch)  # for PrefetchDataLoader
+        if batch.temporal is not None and not isinstance(
+            batch.temporal,
+            TemporalBatch,
+        ):
+            batch = batch._replace(temporal=TemporalBatch(*batch.temporal))
         if not self._train_duration_head_only:
             memo['actions_task_id'] = einops.rearrange(
                 batch.actions_task_id + 1,
                 'b ns -> (b ns)',
             )
 
-            logits = self.predict(
+            logits, temporal_output = self._predict_with_temporal_output(
                 batch.time_steps,
                 batch.constellation_sensor_type,
                 batch.constellation_sensor_enabled,
@@ -712,6 +897,7 @@ class JointModel(Model):
                 batch.tasks_sensor_type,
                 batch.tasks_data,
                 batch.tasks_mask,
+                temporal_history=self._history_from_batch(batch),
             )
             flat_logits = einops.rearrange(logits, 'b ns nt -> (b ns) nt')
             memo['logits'] = flat_logits
@@ -729,6 +915,40 @@ class JointModel(Model):
                 batch.constellation_mask,
                 batch.tasks_mask,
             )
+            if temporal_output is None:
+                temporal_visible_loss = logits.new_zeros(())
+                temporal_progress_loss = logits.new_zeros(())
+                temporal_completion_loss = logits.new_zeros(())
+                temporal_event_time_loss = logits.new_zeros(())
+            else:
+                if batch.temporal is None:
+                    raise ValueError(
+                        'temporal targets are required for adapter training'
+                    )
+                temporal_losses = temporal_outcome_loss(
+                    temporal_output,
+                    batch.temporal,
+                    batch.actions_task_id,
+                    positive_weights=(
+                        None
+                        if self._temporal_visible_positive_weights is None
+                        else TemporalOutcomePositiveWeights(
+                            visible=(
+                                self._temporal_visible_positive_weights
+                            ),
+                            progress=(
+                                self._temporal_progress_positive_weights
+                            ),
+                            completion=(
+                                self._temporal_completion_positive_weights
+                            ),
+                        )
+                    ),
+                )
+                temporal_visible_loss = temporal_losses.visible
+                temporal_progress_loss = temporal_losses.progress
+                temporal_completion_loss = temporal_losses.completion
+                temporal_event_time_loss = temporal_losses.event_time
 
         pred_durations, pred_masks = self._transformer._time_model._predict(
             batch.constraint_time_steps,
@@ -762,6 +982,10 @@ class JointModel(Model):
             la_loss = pred_durations.new_zeros(())
             assignment_collision_loss = pred_durations.new_zeros(())
             assignment_coverage_loss = pred_durations.new_zeros(())
+            temporal_visible_loss = pred_durations.new_zeros(())
+            temporal_progress_loss = pred_durations.new_zeros(())
+            temporal_completion_loss = pred_durations.new_zeros(())
+            temporal_event_time_loss = pred_durations.new_zeros(())
         else:
             assignment_collision_loss = assignment_auxiliary.collision
             assignment_coverage_loss = assignment_auxiliary.coverage
@@ -771,6 +995,12 @@ class JointModel(Model):
             + self._assignment_loss_weight * la_loss
             + self._collision_loss_weight * assignment_collision_loss
             + self._coverage_loss_weight * assignment_coverage_loss
+            + self._temporal_visible_loss_weight * temporal_visible_loss
+            + self._temporal_progress_loss_weight * temporal_progress_loss
+            + self._temporal_completion_loss_weight
+            * temporal_completion_loss
+            + self._temporal_event_time_loss_weight
+            * temporal_event_time_loss
         )
         memo.update(
             loss=loss,
@@ -782,6 +1012,10 @@ class JointModel(Model):
             assignment_loss=la_loss,
             assignment_collision_loss=assignment_collision_loss,
             assignment_coverage_loss=assignment_coverage_loss,
+            temporal_visible_loss=temporal_visible_loss,
+            temporal_progress_loss=temporal_progress_loss,
+            temporal_completion_loss=temporal_completion_loss,
+            temporal_event_time_loss=temporal_event_time_loss,
         )
 
         tensors: dict[str, torch.Tensor] = dict(
@@ -793,6 +1027,10 @@ class JointModel(Model):
             ce_loss=la_loss,
             assignment_collision_loss=assignment_collision_loss,
             assignment_coverage_loss=assignment_coverage_loss,
+            temporal_visible_loss=temporal_visible_loss,
+            temporal_progress_loss=temporal_progress_loss,
+            temporal_completion_loss=temporal_completion_loss,
+            temporal_event_time_loss=temporal_event_time_loss,
         )
         if log is not None:
             log.update({k: f'{v:.3f}' for k, v in tensors.items()})

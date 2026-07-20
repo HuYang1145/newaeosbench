@@ -19,6 +19,9 @@ from constellation.new_transformers import SATELLITE_DIM, TASK_DIM
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from todd.patches.py_ import json_load
 from constellation.new_transformers.model import GLOBALS
+from constellation.new_transformers.temporal_history import (
+    CausalAssignmentHistory,
+)
 
 from constellation import (
     ANNOTATIONS_ROOT,
@@ -58,6 +61,12 @@ class Observation(TypedDict):
     constellation_data: npt.NDArray[np.float32]
     tasks_sensor_type: npt.NDArray[np.uint8]
     tasks_data: npt.NDArray[np.float32]
+    previous_task_index: npt.NDArray[np.int32]
+    previous_task_available: npt.NDArray[np.uint8]
+    previous_was_idle: npt.NDArray[np.uint8]
+    run_length: npt.NDArray[np.float32]
+    switch_count_30: npt.NDArray[np.float32]
+    switch_count_60: npt.NDArray[np.float32]
 
 
 null_observation = Observation(
@@ -72,7 +81,51 @@ null_observation = Observation(
     ),
     tasks_sensor_type=np.zeros(MAX_NUM_TASKS, np.uint8),
     tasks_data=np.zeros((MAX_NUM_TASKS, TASK_DIM), np.float32),
+    previous_task_index=np.full(MAX_NUM_SATELLITES, -1, np.int32),
+    previous_task_available=np.zeros(MAX_NUM_SATELLITES, np.uint8),
+    previous_was_idle=np.ones(MAX_NUM_SATELLITES, np.uint8),
+    run_length=np.zeros(MAX_NUM_SATELLITES, np.float32),
+    switch_count_30=np.zeros(MAX_NUM_SATELLITES, np.float32),
+    switch_count_60=np.zeros(MAX_NUM_SATELLITES, np.float32),
 )
+
+
+def map_relative_actions_to_global(
+    task_ids: list[int] | npt.NDArray[np.integer],
+    candidate_global_task_ids: list[int],
+) -> list[int]:
+    """把当前候选相对动作转换为可跨时间保存的全局任务 ID。"""
+    return [
+        candidate_global_task_ids[task_id]
+        if 0 <= int(task_id) < len(candidate_global_task_ids) else -1
+        for task_id in task_ids
+    ]
+
+
+def history_to_observation(
+    history: CausalAssignmentHistory,
+    candidate_global_task_ids: list[int],
+) -> dict[str, npt.NDArray]:
+    """把在线历史快照转换为 Gym observation 中的原始计数。"""
+    snapshot = history.snapshot(candidate_global_task_ids)
+    return dict(
+        previous_task_index=(
+            snapshot.previous_task_indices[0].numpy().astype(np.int32)
+        ),
+        previous_task_available=(
+            snapshot.previous_task_available[0].numpy().astype(np.uint8)
+        ),
+        previous_was_idle=(
+            snapshot.previous_was_idle[0].numpy().astype(np.uint8)
+        ),
+        run_length=snapshot.run_lengths[0].numpy().astype(np.float32),
+        switch_count_30=(
+            snapshot.switch_count_30[0].numpy().astype(np.float32)
+        ),
+        switch_count_60=(
+            snapshot.switch_count_60[0].numpy().astype(np.float32)
+        ),
+    )
 
 
 class Padding:
@@ -117,6 +170,12 @@ class Padding:
             'constellation_data',
             'tasks_sensor_type',
             'tasks_data',
+            'previous_task_index',
+            'previous_task_available',
+            'previous_was_idle',
+            'run_length',
+            'switch_count_30',
+            'switch_count_60',
         ]:
             s = observation[k]
             t = null_observation[k].copy()
@@ -163,6 +222,34 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
                     low=-1e3,
                     high=1e3,
                     shape=(MAX_NUM_TASKS, TASK_DIM),
+                ),
+                previous_task_index=spaces.Box(
+                    low=-1,
+                    high=MAX_NUM_TASKS - 1,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.int32,
+                ),
+                previous_task_available=spaces.MultiBinary(
+                    MAX_NUM_SATELLITES,
+                ),
+                previous_was_idle=spaces.MultiBinary(MAX_NUM_SATELLITES),
+                run_length=spaces.Box(
+                    low=0,
+                    high=MAX_TIME_STEP,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
+                ),
+                switch_count_30=spaces.Box(
+                    low=0,
+                    high=30,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
+                ),
+                switch_count_60=spaces.Box(
+                    low=0,
+                    high=60,
+                    shape=(MAX_NUM_SATELLITES,),
+                    dtype=np.float32,
                 ),
             )
         )
@@ -219,14 +306,14 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         npt.NDArray[np.uint8],
         npt.NDArray[np.float32],
     ]:
-        sensor_type, static_data = self._task_manager.valid_tasks.to_tensor()
+        sensor_type, static_data = self._task_manager.ongoing_tasks.to_tensor()
 
         static_data = static_data.clone()
         t = self._simulator.timer.time
         static_data[..., 0] -= t
         static_data[..., 1] -= t
 
-        progress = self._task_manager.progress[self._task_manager.valid_labels]
+        progress = self._task_manager.progress[self._task_manager.ongoing_flags]
         dynamic_data = einops.rearrange(progress, 'nt -> nt 1')
 
         data = torch.cat([static_data, dynamic_data], -1)
@@ -243,9 +330,16 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
 
         tasks_sensor_type, tasks_data = self._load_tasks()
 
+        candidate_global_task_ids = (
+            self._task_manager.ongoing_flags.nonzero().flatten().tolist()
+        )
+        temporal_observation = history_to_observation(
+            self._assignment_history,
+            candidate_global_task_ids,
+        )
         observation = Observation(
             num_satellites=self._simulator.num_satellites,
-            num_tasks=self._task_manager.num_valid_tasks,
+            num_tasks=self._task_manager.num_ongoing_tasks,
             time_step=self._simulator.timer.time,
             constellation_sensor_type=cast(
                 npt.NDArray[np.uint8],
@@ -258,6 +352,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
                 tasks_sensor_type - 1,
             ),
             tasks_data=tasks_data,
+            **temporal_observation,
         )
 
         return self._padding(observation)
@@ -277,11 +372,10 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         # 1 1 -> 1
         # toggles = [self._simulator.timer.time == 0 for _ in task_ids]
 
-        tasks = self._task_manager.valid_tasks
-        target_locations = [
-            None if task_id == -1 else tasks[task_id].coordinate
-            for task_id in task_ids
-        ]
+        tasks = self._task_manager.ongoing_tasks
+        candidate_global_task_ids = (
+            self._task_manager.ongoing_flags.nonzero().flatten().tolist()
+        )
 
         if hasattr(self, '_pred_mask'):
             for constellation_id, task_id in enumerate(task_ids):
@@ -289,6 +383,15 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
                                                      task_id]:
                     task_ids[constellation_id] = -1
             delattr(self, '_pred_mask')
+
+        task_ids = [
+            task_id if 0 <= task_id < len(tasks) else -1
+            for task_id in task_ids
+        ]
+        target_locations = [
+            None if task_id == -1 else tasks[task_id].coordinate
+            for task_id in task_ids
+        ]
 
         toggles = [(task_id == -1 and satellite.sensor.enabled)
                    or (task_id != -1 and not satellite.sensor.enabled)
@@ -304,6 +407,10 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         self._simulator.timer.step()
 
         self.evaluator_log_progress(task_ids)
+        self._assignment_history.record(map_relative_actions_to_global(
+            task_ids,
+            candidate_global_task_ids,
+        ))
 
     def _skip_idle(self) -> None:
         while self._task_manager.is_idle:
@@ -344,6 +451,9 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
             num_satellites=simulator.num_satellites,
         )
         self._task_manager = task_manager
+        self._assignment_history = CausalAssignmentHistory(
+            simulator.num_satellites,
+        )
 
         self._evaluators: list[BaseEvaluator] = [
             CompletionRateEvaluator(),
@@ -375,7 +485,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         reward = 0.
         reward += completed.numel() * 100
 
-        is_visible[:, ~self._task_manager.valid_labels] = False
+        is_visible[:, ~self._task_manager.ongoing_flags] = False
         num_visible_satellites = is_visible.any(1).sum().item()
         reward += 2 * num_visible_satellites - is_visible.shape[0]
         reward /= 10
@@ -383,7 +493,7 @@ class Environment(gym.Env[Observation, npt.NDArray[np.uint16]]):
         self._skip_idle()
 
         # NOTE: test after skipping idle
-        terminated = self._task_manager.is_finished
+        terminated = self._task_manager.all_closed
         truncated = self._simulator.timer.time >= self._simulator.end_time
 
         observation = (

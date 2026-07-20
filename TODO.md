@@ -13,6 +13,59 @@ Q = 0.6*CR + 0.2*PCR + 0.2*WCR
 CS_paper = Q^(-1) + TAT_s/700 + PC_Wh/100
 ```
 
+## 当前路线：事件式 Actor + 局部监督 + APPO/PPO
+
+从 2026-07-20 起，活动路线统一使用 `M0–M5`：
+
+```text
+M0 结果、分支和基线收束
+→ M1 无训练事件式 Actor
+→ M2 终止、持续时间与事实结果监督
+→ M3 事件决策点的受控局部候选比较
+→ M4 事件级 APPO/PPO
+→ M5 软容量星座级联合分配
+```
+
+旧的 `P0/P0.1/P1/P2/P3.x` 只作为已经运行实验、commit、脚本和产物目录的历史
+编号保留，不再使用新的 `P` 编号扩展活动路线。
+
+## M0：结果与恢复点收束
+
+- [x] 当前工作分支保持为 `codex/offline-critic-ranking`。
+- [x] 修改前基线为 `71dc76d`。
+- [x] 局部受控 rollout 与 Graph-Q 工作通过 47 项测试，并保存为 checkpoint
+  commit `0a760ee`。
+- [x] M0/M1 正式实施计划保存为
+  `docs/superpowers/plans/2026-07-20-event-actor-m0-m1.md`，commit 为 `f50760b`。
+- [x] 合入 `codex/p0-causal-history-adapter` 的因果历史、Temporal Adapter、
+  训练/评估脚本和测试；保留 Stage3 关闭新模块时的兼容路径。
+- [x] Temporal Adapter 10k 已完成 8+8 Val，但 Val Seen/Unseen 的
+  `CS_paper` 分别从 `4.2255/4.1632` 恶化到 `4.2994/4.2372`，停止 64+64
+  Val 和 Test。
+- [x] 历史 P3.1 局部 Graph-Q pilot 已回收：33 个源样本中只有 18 个 pair
+  通过 margin，来自 5 个 scene；300/600 秒偏好一致率只有 `45.45%`，
+  Graph-Q 合并准确率 `0.4125`，只有 `1/4` fold 通过。
+- [x] 历史 P3.1 决策为 `stop_before_actor_or_reranking`：不扩大到 512 场，
+  不接入 Actor，不进入 PPO。
+
+## M1：无训练事件式 Actor
+
+目标：Basilisk 仍按 1 秒推进，但冻结 Stage3 Actor 只在初始、非空任务承诺到期
+或任务失效时重新规划；第一轮只比较固定 `1/5/15/30/60 s` 承诺，不训练新模型。
+
+- [ ] 新增每星 `EventAssignmentState`，使用全局 `task_id` 维护当前任务、剩余
+  承诺、开始时间和中断原因。
+- [ ] 新增 `EventActorRuntime`；承诺有效时不调用 planner，只在事件发生时重规划
+  对应卫星。
+- [ ] idle 始终只承诺 1 秒；任务完成、到期、失败或离开 ongoing 集合时立即中断。
+- [ ] 接入 `tools/rollout_model_trajectories.py`，新增 `--event-actor` 和
+  `--event-commitment-seconds`，默认关闭，关闭时逐秒 Stage3 行为保持不变。
+- [ ] 输出 `model_call_count`、每档承诺数量、任务一秒承诺率、任务平均承诺时长和
+  各类中断计数。
+- [ ] 完成单场完整 3,600 秒 CPU 协议 smoke；正式 8+8 Val 只通过 Slurm 运行。
+- [ ] 只有关闭兼容、任务失效中断、模型调用下降和定向测试全部通过，才把 M1
+  标记为“机制实现完成”；性能是否提高必须等待同场景 Val。
+
 ## 当前基线
 
 | 模型 | Split | CR/% | PCR/% | WCR/% | PC_Wh |
@@ -48,7 +101,7 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 结论：主要问题是星座级重复争抢，次要问题是候选任务最终覆盖不足；合理接力不能
 解释大部分重复选择。
 
-## P0：轻量二部图联合分配
+## 历史实验 P0：轻量二部图联合分配
 
 目标：保留现有 Transformer 的候选表示能力，在其后增加轻量
 `bipartite graph assignment head`，减少多颗卫星同时争抢同一任务。
@@ -85,7 +138,7 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 在 4 个真实训练样本上，图头仅改变约 `0.20%` 的 top-1 动作，soft collision 从
 `0.069053` 降到 `0.068995`，硬重复率只从 `39.04%` 降到 `38.97%`。
 
-## P0.1：无训练全局 owner 分配
+## 历史实验 P0.1：无训练全局 owner 分配
 
 - [x] 回到原始 Stage3-200k checkpoint，不加载 P0 图头，不使用专家动作 CE。
 - [x] 使用 Transformer logits 做 Hungarian 全局匹配；每颗卫星最多一个任务、每个
@@ -111,7 +164,7 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
 唯一约束，应研究只压制低价值重复、允许少量高价值协作的自适应容量；仍不恢复专家
 动作 CE。
 
-## 后续方向
+## 历史 P2/P3 探索
 
 下一轮优先方向：
 
@@ -174,22 +227,18 @@ Stage3-200k 完成率较高，但功耗也更高；Val 与 Test 仍有明显泛�
   已完成 `H=180/300/600 s` 对照；相同 H=180 重跑结果逐字节一致，三个窗口的
   stay/switch 决策前状态哈希也一致，15 项相关测试通过。结果见
   `work_dirs/local_action_branch_p30_smoke_cpu/summary.json`。
-- [ ] P3.1 多场景受控标签生成进行中：以 `H=300 s` 为主窗口、`H=180/600 s`
-  做一致性对照；每个候选只运行一次最长窗口并复用前缀，候选为去重后的
-  `stay + Actor top-k`。8 场协议 pilot 已在 `tmux: local_graph_q_p31_8`
-  启动，数据目录为 `work_dirs/local_graph_q_p31_pilot_8/`。
+- [x] P3.1 多场景受控标签与四折 pilot 已完成：以 `H=300 s` 为主窗口、
+  `H=180/600 s` 做一致性对照；33 个源样本中只有 18 个有效 pair，来自 5 个
+  scene，300/600 秒偏好一致率为 `45.45%`。
 - [x] P3.2 已实现局部多目标 Graph-Q 裁判：输入仅包含在线可得的上一任务、连续
   执行时长、近 30/60 秒切换、任务进度/剩余时限、Actor logits 和卫星—任务图；
   输出候选代价及完成、进度、功耗、切换、一秒片段、重复观测六个分量。
   `is_visible` 与 Basilisk 结果只作为离线监督，不进入在线推理。
-- [ ] P3.3 四折训练代码已完成，8 场 pilot 结果待回收。验收仍要求 Graph-Q
-  pairwise accuracy 至少 `0.60`、相对汇总基线提升至少 `0.05`、至少 `3/4` fold
-  通过且 mean regret 不恶化；协议通过后再扩大到至少 512 场，不能用 8 场结果
-  宣布模型有效。
-- [ ] P3.4 裁判通过后先作为轻量 top-k 重排序器，不立即修改 Actor。先跑
-  Val Seen/Unseen 各 2 场完整 `3,600 s` Basilisk 验真，同时检查
-  `CR/PCR/WCR/TAT_s/PC_Wh/CS_paper`、一秒脉冲率和重复率；重排序有效后才考虑
-  Advantage/DPO adapter。正式场景时长不缩短，Basilisk 不进入在线推理热路径。
+- [x] P3.3 四折训练已完成但未通过：Graph-Q 合并 pairwise accuracy
+  `0.4125`，汇总基线为 `0.3000`，只有 `1/4` fold 通过，未达到 `0.60` 和
+  `3/4` fold 门槛。
+- [x] P3.4 按门槛取消：不进行 top-k 重排序，不扩大到 512 场，不运行
+  Val/Test，不训练 Advantage/DPO adapter，也不进入 PPO。
 
 ## 实验记录要求
 
@@ -212,7 +261,26 @@ Val Unseen CR / PCR / WCR / TAT_s / PC_Wh / CS_paper：
 
 ## 当前托管任务
 
-- 当前没有正在运行的训练或评估任务。
+- Temporal Adapter P0-B 10k 已于 2026-07-20 00:42 EDT 完成：分支
+  `codex/p0-causal-history-adapter`，训练代码提交 `f70a8b0`，共完成 10,000 iter。
+- P0-B 加载 Stage3-200k checkpoint：
+  `work_dirs/paper_joint_stage3_200k/checkpoints/iter_200000/model.pth`；训练日志：
+  `work_dirs/eval_logs/temporal_adapter_p0_10k_train.log`；输出目录：
+  `work_dirs/temporal_adapter_p0_10k/`；最终 checkpoint：
+  `work_dirs/temporal_adapter_p0_10k/checkpoints/iter_10000/model.pth`。
+- 已通过 Slurm 运行 Val Seen/Unseen 各 8 场：包装脚本
+  `scripts/eval_temporal_adapter_p0_8_slurm.sh`，账户 `lab_team`，申请
+  `1 GPU / 24 CPU / 96G / 2h`；不再直接占用本机 GPU。
+- Slurm job `493` 已在 `local-10/server-10` 完成，`ExitCode=0:0`，耗时
+  `00:35:36`；日志：
+  `work_dirs/eval_logs/temporal_adapter_p0_eval8_slurm_493.log`。
+- job `492` 因 Slurm spool 中的脚本无法按 `BASH_SOURCE` 找到代码目录而退出；
+  已在提交 `7bb993c` 中改为优先使用 `SLURM_SUBMIT_DIR`，job `493` 已正常加载
+  Temporal Adapter checkpoint 并完成评估。
+- 8+8 汇总：`work_dirs/eval_summaries/temporal_adapter_p0_10k_val8.json`。
+- 同场景对照中，Val Seen/Unseen 的 `CS_paper` 分别由 Stage3 baseline 的
+  `4.2255/4.1632` 恶化到 `4.2994/4.2372`；两个 split 均未通过，不运行
+  64+64 Val 或 Test。
 - P0 第一阶段训练已在 `server-10` 直接完成，不经过 Slurm；`groupA/groupB` 权限
   不影响本机实验。
 - 训练日志：`work_dirs/assignment_head_p0_c020_cov010_10k/`；最终 checkpoint：
