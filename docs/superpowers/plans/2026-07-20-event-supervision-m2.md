@@ -230,7 +230,7 @@ Expected: 全部通过。
 - Modify: `TODO.md`
 - Modify: `改进日志.md`
 
-- [ ] **Step 1: 记录标签分布和 smoke**
+- [x] **Step 1: 记录标签分布和 smoke**
 
 明确区分行为标签与事实结果标签，记录 checkpoint、annotation、样本数、loss 和冻结
 参数检查。

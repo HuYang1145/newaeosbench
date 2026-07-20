@@ -85,6 +85,42 @@ M0 结果、分支和基线收束
 却明显漏掉可用时机。M2 应训练终止/持续时间/事实结果头，并将“是否触发全局
 Actor 前向”与“哪些卫星接受新动作”进一步解耦，而不是继续手工放大固定时长。
 
+## M2：终止、持续时间与事实结果监督
+
+目标：不重新生成反事实轨迹，先复用旧 Stage3 轨迹监督事件决策需要的
+`continue/stop`、`1/5/15/30/60 s` 持续时间和短窗口事实结果。第一轮严格冻结
+Stage3 Actor，并令 `temporal_residual_scale=0`，因此训练不会改变现有任务 logits。
+
+- [x] 正式设计和实施计划已保存为
+  `docs/superpowers/specs/2026-07-20-event-supervision-m2-design.md` 与
+  `docs/superpowers/plans/2026-07-20-event-supervision-m2.md`。
+- [x] 从旧轨迹构造 `continue/stop` 和保守 duration 标签：提前切换或短轨迹末端
+  作为 censored，不伪装成负样本；idle 不参与 duration loss。
+- [x] `JointDataset` 已返回事件标签，Temporal Adapter 已新增 continue head、
+  5 档 duration head，并复用可见、进度、完成和事件时间 outcome heads。
+- [x] M2 配置冻结 91,381,765 个 Stage3 参数，只训练 101,795 个
+  Temporal Adapter 参数；动作、feasibility、time 和 assignment loss 均关闭。
+- [x] 对 Stage3 annotation 前 256 场完成标签审计，共 15,402,489 条非空执行边。
+  continue 占 `99.4442%`；duration 仅 `0.1352%` censored，已观测 duration 中
+  `1/5/15/30/60 s` 分别占 `2.21%/5.40%/7.77%/14.45%/70.16%`。配置使用审计
+  推导的类别权重，避免多数类主导损失。
+- [x] 真实 train scene 0、batch size 2 的 forward/backward/AdamW step 通过：
+  总 loss 为 `9.3418`，冻结参数全部无梯度且逐值不变，event head 确实更新；
+  64 项 M2/Temporal 回归测试通过。
+- [x] 首次 Slurm job `582` 在首个迭代前按预期暴露资源问题并退出：四张 4090
+  均被 Slurm 外的 `VLLM::Worker_TP0–TP3` 各占约 21.5 GiB，原继承的
+  `batch_size=48` 还需分配 1.45 GiB，GPU 0 当时仅余 1.37 GiB。没有生成 M2
+  checkpoint，也不是标签或模型数值失败。
+- [ ] 通过 Slurm 在 `local-10` 运行 10k event-head 训练，并记录 job、日志和
+  checkpoint；资源受限重试使用 `batch_size=8` 和
+  `constraint_batch_size=8`。训练 loss 下降只证明可拟合，不能当作调度性能提升。
+- [ ] 训练完成后先审计未见 scene 的 continue/duration/outcome 指标，再把学到的
+  终止/持续时间接入 M1 runtime 做小规模同场景 Val；在此之前不运行 Test。
+
+重要边界：continue/duration 是历史专家实际行为标签，outcome 是执行后的事实标签；
+它们都不是“同一状态下哪个候选更好”的反事实标签。因此 M2 可以学习何时持续和
+实际结果，但不能单独解决候选优劣和专家重复冗余；候选比较仍属于 M3。
+
 ## 当前基线
 
 | 模型 | Split | CR/% | PCR/% | WCR/% | PC_Wh |

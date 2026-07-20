@@ -83,7 +83,10 @@ trainer['callbacks'][1]['lr_scheduler'] = {
 trainer['callbacks'][5]['interval'] = 1_000.0
 trainer['dataset']['include_temporal_history'] = True
 trainer['dataset']['temporal_horizons'] = (5, 15, 30, 60)
-trainer['dataset']['constraint_batch_size'] = 16
+# local-10 的四张 4090 当前均被共享 VLLM 各占约 21.5 GiB。
+# M2 第一轮只做资源受限 pilot，使用已通过真实 batch smoke 的小批量。
+trainer['dataset']['batch_size'] = 8
+trainer['dataset']['constraint_batch_size'] = 8
 trainer['optimizer']['lr'] = 5e-4
 
 validator = _deepcopy(_stage3_validator)

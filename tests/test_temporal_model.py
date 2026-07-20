@@ -428,6 +428,8 @@ def test_m2_event_head_config_freezes_actor_without_residual() -> None:
     )
     assert config.trainer.dataset.include_temporal_history is True
     assert config.trainer.dataset.temporal_horizons == (5, 15, 30, 60)
+    assert config.trainer.dataset.batch_size == 8
+    assert config.trainer.dataset.constraint_batch_size == 8
     assert config.trainer.dataset.annotation_file == (
         'train_paper_stage3_tau_e_existing.json'
     )
