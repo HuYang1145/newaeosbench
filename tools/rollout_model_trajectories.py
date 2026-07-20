@@ -37,7 +37,8 @@ from constellation.task_managers import TaskManager
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Roll out a trained actor and save trajectories for stage 2',
+        description=
+        'Roll out a trained actor and save trajectories for stage 2',
     )
     parser.add_argument('checkpoint', type=pathlib.Path)
     parser.add_argument('output_root', type=pathlib.Path)
@@ -102,6 +103,26 @@ def select_action_indices(
     return top_indices.gather(-1, sampled_offsets).squeeze(-1)
 
 
+def ranked_task_candidates(
+    logits: torch.Tensor,
+    *,
+    task_ids: torch.Tensor,
+    top_k: int,
+) -> list[int]:
+    """把单颗卫星含 null 的 logits 映射为有序真实任务 id。"""
+
+    if logits.ndim != 1 or task_ids.ndim != 1:
+        raise ValueError('logits and task_ids must be one-dimensional')
+    if logits.numel() != task_ids.numel() + 1:
+        raise ValueError('logits must contain null plus every ongoing task')
+    if top_k <= 0:
+        raise ValueError('top_k must be positive')
+    indices = logits.topk(min(top_k, logits.numel())).indices.tolist()
+    return [
+        -1 if index == 0 else int(task_ids[index - 1]) for index in indices
+    ]
+
+
 def write_rollout_metadata(
     output_root: pathlib.Path,
     *,
@@ -149,6 +170,8 @@ class GreedyModelAlgorithm(BaseAlgorithm):
             print(f'[rollout] unexpected keys: {len(missing.unexpected_keys)}')
         self._model = model.to(device)
         self._model.eval()
+        self.last_logits: torch.Tensor | None = None
+        self.last_task_ids: torch.Tensor | None = None
 
     def prepare(
         self,
@@ -174,23 +197,28 @@ class GreedyModelAlgorithm(BaseAlgorithm):
         task_static_data = task_static_data.clone()
         task_static_data[..., 0] -= self._timer.time
         task_static_data[..., 1] -= self._timer.time
-        task_progress = self._task_manager.progress[self._task_manager.ongoing_flags]
+        task_progress = self._task_manager.progress[
+            self._task_manager.ongoing_flags]
         task_dynamic_data = task_progress.unsqueeze(-1)
         task_data = torch.cat([task_static_data, task_dynamic_data], -1)
-        task_data = (
-            (task_data - self._statistics.taskset_mean) /
-            (self._statistics.taskset_std + 1e-6)
-        )
+        task_data = ((task_data - self._statistics.taskset_mean) /
+                     (self._statistics.taskset_std + 1e-6))
 
         return (
-            torch.tensor([self._timer.time], dtype=torch.long, device=self._device),
+            torch.tensor([self._timer.time],
+                         dtype=torch.long,
+                         device=self._device),
             (sensor_type - 1).unsqueeze(0).to(self._device),
             sensor_enabled.unsqueeze(0).to(self._device),
             constellation_data.unsqueeze(0).float().to(self._device),
-            torch.ones((1, len(constellation)), dtype=torch.bool, device=self._device),
+            torch.ones((1, len(constellation)),
+                       dtype=torch.bool,
+                       device=self._device),
             (task_sensor_type - 1).unsqueeze(0).to(self._device),
             task_data.unsqueeze(0).float().to(self._device),
-            torch.ones((1, len(taskset)), dtype=torch.bool, device=self._device),
+            torch.ones((1, len(taskset)),
+                       dtype=torch.bool,
+                       device=self._device),
         )
 
     def step(
@@ -202,6 +230,8 @@ class GreedyModelAlgorithm(BaseAlgorithm):
         del earth_rotation
 
         if len(taskset) == 0:
+            self.last_logits = None
+            self.last_task_ids = taskset.ids.clone()
             assignment = [-1] * len(constellation)
             actions = Actions(
                 Action(
@@ -212,7 +242,11 @@ class GreedyModelAlgorithm(BaseAlgorithm):
             return actions, assignment
 
         with torch.inference_mode():
-            logits = self._model.predict(*self._build_inputs(taskset, constellation))
+            logits = self._model.predict(
+                *self._build_inputs(taskset, constellation)
+            )
+        self.last_logits = logits.detach().cpu()
+        self.last_task_ids = taskset.ids.detach().cpu().clone()
         relative_task_ids = select_action_indices(
             logits,
             strategy=self._strategy,
@@ -233,8 +267,8 @@ class GreedyModelAlgorithm(BaseAlgorithm):
                 toggle=((task_id == -1 and satellite.sensor.enabled) or
                         (task_id != -1 and not satellite.sensor.enabled)),
                 target_location=(
-                    None if relative_task_id == -1
-                    else taskset[int(relative_task_id)].coordinate
+                    None if relative_task_id ==
+                    -1 else taskset[int(relative_task_id)].coordinate
                 ),
             ) for satellite, task_id, relative_task_id in zip(
                 constellation.sort(),
@@ -276,7 +310,10 @@ def rollout_one(
         return
 
     constellation = Constellation.load(
-        str(CONSTELLATIONS_ROOT / split / f'{id_ // 1000:02}' / f'{id_:05}.json'),
+        str(
+            CONSTELLATIONS_ROOT / split / f'{id_ // 1000:02}'
+            / f'{id_:05}.json'
+        ),
     )
     taskset: TaskSet[Task] = TaskSet.load(
         str(TASKSETS_ROOT / split / f'{id_ // 1000:02}' / f'{id_:05}.json'),
