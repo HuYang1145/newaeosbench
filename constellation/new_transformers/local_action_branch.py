@@ -7,6 +7,7 @@
 __all__ = [
     'BranchDecision',
     'ControlledActionAlgorithm',
+    'ControlledCommitmentAlgorithm',
     'LocalWindowCallback',
     'find_stay_switch_decisions',
     'is_decision_replayable',
@@ -373,6 +374,107 @@ class ControlledActionAlgorithm(BaseAlgorithm):
         if self._decision_context is None:
             raise RuntimeError('decision context is not ready')
         return self._decision_context
+
+
+class ControlledCommitmentAlgorithm(ControlledActionAlgorithm):
+    """从同一状态强制一颗卫星保持候选动作若干秒。"""
+
+    def __init__(
+        self,
+        *args,
+        commitment_seconds: int,
+        **kwargs,
+    ) -> None:
+        if commitment_seconds not in (1, 5, 15, 30, 60):
+            raise ValueError(
+                'commitment_seconds must be one of (1, 5, 15, 30, 60)'
+            )
+        super().__init__(*args, **kwargs)
+        if self._decision_time < 0:
+            raise ValueError('decision_time must be non-negative')
+        self.requested_commitment_seconds = commitment_seconds
+        self.actual_commitment_seconds = 0
+        self.interruption_reason: str | None = None
+
+    def _capture_start(
+        self,
+        *,
+        taskset: TaskSet,
+        constellation: Constellation,
+        earth_rotation: torch.Tensor,
+        assignment: list[int],
+    ) -> None:
+        if not 0 <= self._satellite_index < len(constellation):
+            raise IndexError('satellite_index is out of range')
+        self.original_assignment = assignment.copy()
+        self.original_task_id = assignment[self._satellite_index]
+        self._capture_decision_context(
+            taskset=taskset,
+            constellation=constellation,
+        )
+        self.decision_state_signature = self._state_signature(
+            constellation=constellation,
+            taskset=taskset,
+            earth_rotation=earth_rotation,
+            assignment=assignment,
+        )
+        self.applied_task_id = self._resolve_forced_task_id()
+
+    def step(
+        self,
+        taskset: TaskSet,
+        constellation: Constellation,
+        earth_rotation: torch.Tensor,
+    ) -> tuple[Actions, list[int]]:
+        actions, raw_assignment = self._base_algorithm.step(
+            taskset,
+            constellation,
+            earth_rotation,
+        )
+        actions = Actions(actions)
+        assignment = list(raw_assignment)
+        time = int(self._timer.time)
+        if time < self._decision_time:
+            self._assignment_history.append(assignment.copy())
+            return actions, assignment
+
+        if time == self._decision_time and self.applied_task_id is None:
+            self._capture_start(
+                taskset=taskset,
+                constellation=constellation,
+                earth_rotation=earth_rotation,
+                assignment=assignment,
+            )
+
+        if self.applied_task_id is None:
+            self._assignment_history.append(assignment.copy())
+            return actions, assignment
+        if self.interruption_reason is not None:
+            self._assignment_history.append(assignment.copy())
+            return actions, assignment
+        if time - self._decision_time >= self.requested_commitment_seconds:
+            self.interruption_reason = 'expired'
+            self._assignment_history.append(assignment.copy())
+            return actions, assignment
+        ongoing_task_ids = {int(value) for value in taskset.ids.tolist()}
+        if (
+            self.applied_task_id >= 0
+            and self.applied_task_id not in ongoing_task_ids
+        ):
+            self.interruption_reason = 'task_unavailable'
+            self._assignment_history.append(assignment.copy())
+            return actions, assignment
+
+        actions[self._satellite_index] = self._forced_action(
+            taskset,
+            constellation,
+            self.applied_task_id,
+        )
+        assignment[self._satellite_index] = self.applied_task_id
+        self.actual_commitment_seconds += 1
+        self.override_applied = True
+        self._assignment_history.append(assignment.copy())
+        return actions, assignment
 
 
 class LocalWindowCallback(BaseCallback):
