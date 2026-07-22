@@ -36,6 +36,23 @@ class OfflineEventBatch(NamedTuple):
     targets: OfflineEventTargets
 
 
+def _build_event_delta_t(
+    *,
+    all_event_indices: list[int],
+    event_indices: list[int],
+    num_satellites: int,
+) -> torch.Tensor:
+    delta_by_event: dict[int, int] = {}
+    previous_event = 0
+    for event in all_event_indices:
+        delta_by_event[event] = max(1, event - previous_event)
+        previous_event = event
+    return torch.tensor(
+        [delta_by_event[event] for event in event_indices],
+        dtype=torch.float,
+    ).view(-1, 1).repeat(1, num_satellites)
+
+
 def _validate_trajectory_tensors(
     actions: torch.Tensor,
     task_valid: torch.Tensor,
@@ -275,14 +292,11 @@ class EventV2OfflineDataset(Dataset):
         replan_mask = action_changed | forced_interrupt
         can_terminate = (previous_actions >= 0) & ~forced_interrupt
 
-        delta_by_event: dict[int, int] = {}
-        previous_event = 0
-        for event in all_event_indices:
-            delta_by_event[event] = max(1, event - previous_event)
-            previous_event = event
-        delta_t = torch.tensor([
-            delta_by_event[event] for event in event_indices
-        ], dtype=torch.float).view(-1, 1).expand_as(history.run_lengths)
+        delta_t = _build_event_delta_t(
+            all_event_indices=all_event_indices,
+            event_indices=event_indices,
+            num_satellites=actions.shape[1],
+        )
 
         event_types = torch.zeros_like(previous_actions)
         termination_reasons = torch.zeros_like(previous_actions)

@@ -2,6 +2,7 @@ import inspect
 
 import torch
 
+from constellation.new_transformers.event_v2 import dataset as event_v2_dataset
 from constellation.new_transformers.event_v2.dataset import (
     EventV2OfflineDataset,
     OfflineEventBatch,
@@ -107,3 +108,14 @@ def test_legacy_expert_owner_counts_saturate_at_v2_safety_cap() -> None:
     )
 
     assert counts.tolist() == [[3, 1]]
+
+
+def test_event_delta_t_has_independent_storage_per_satellite() -> None:
+    delta_t = event_v2_dataset._build_event_delta_t(
+        all_event_indices=[2, 5],
+        event_indices=[2, 5],
+        num_satellites=3,
+    )
+
+    assert delta_t.tolist() == [[2., 2., 2.], [3., 3., 3.]]
+    assert torch._debug_has_internal_overlap(delta_t) == 0
