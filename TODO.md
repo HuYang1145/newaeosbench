@@ -6,12 +6,16 @@
 Stage3 `JointModel` 并行存在，不覆盖 Stage3 checkpoint、M2/M3 结果或正式评估
 输出。
 
-设计已经逐节确认，正式文档为：
+设计和 V2-0 foundation 已经完成，正式设计与实施计划为：
 
 `docs/superpowers/specs/2026-07-21-event-joint-transformer-v2-design.md`
 
-当前尚未编写 V2 模型代码，也没有启动 V2 训练。下一步是在用户审阅正式设计后编写
-实施计划，再建立独立分支 `codex/event-joint-transformer-v2`。
+`docs/superpowers/plans/2026-07-21-event-joint-transformer-v2-foundation.md`
+
+当前工作分支为 `codex/event-joint-transformer-v2`。V2 模型、旧轨迹事件数据、离线
+warm-start loss、checkpoint 和 Slurm 入口已经实现；119 个 V2/邻接旧回归测试及一次
+真实单步 CPU preflight 已通过。尚未运行 V2-0 正式 10k GPU warm start，也没有任何
+完成率提高证据。
 
 ## 目标
 
@@ -126,7 +130,17 @@ PPO 样本以事件为单位保存：
 
 ## Reward
 
-使用现有 Evaluator 的 CR/PCR/WCR 任务权重定义 `omega_i`，令任务进度比例为：
+现有 `CompletionRateEvaluator` 中 `PCR` 包含未完成任务的终点部分进度，因此精确
+终点不能写成只依赖 `completed_i` 的加权和。V2 直接重建：
+
+```text
+Q_final = 0.6*mean(completed_i)
+        + 0.2*mean(progress_ratio_i)
+        + 0.2*sum(duration_i*completed_i)/sum(duration_i)
+```
+
+dense potential 使用 `omega_i = 0.8/N + 0.2*duration_i/sum(duration)`，令任务进度
+比例为：
 
 ```text
 p_i(s) = clamp(progress_i / required_duration_i, 0, 1)
@@ -148,19 +162,27 @@ sum(event_reward) = Q_final
 
 - [x] 第一阶段使用 `gamma=1`，不因事件持续更久而折扣最终完成质量。
 - [x] time-aware GAE 使用物理 `delta_t` 调整 eligibility。
-- [x] 未完成任务的临时部分进度收益在终点被精确收回。
+- [x] 未完成任务的 CR/WCR 代理进度在终点被收回，同时保留 Evaluator 中真实 PCR
+  的 `0.2` 部分进度权重。
 - [x] 第二阶段同样要求 `sum(event_reward) = -CS_paper`。
 
 ## 训练阶段
 
 ### V2-0：离线 warm start
 
-- [ ] 最长约 4 小时。
-- [ ] 加载 Stage3 表征权重。
-- [ ] 在旧轨迹事件状态上蒸馏 Stage3 候选任务基础 logits。
-- [ ] 从连续动作片段初始化 termination 和 minimum commitment。
-- [ ] 使用旧轨迹最终 `Q` 的 event return 预训练 centralized Critic。
-- [ ] 只验证不是随机策略，不以离线 loss 宣布性能提升。
+- [x] V2-0 模型、事件数据、loss、checkpoint 与 Slurm 代码完成。
+- [x] 兼容缺少后来新增 `_duration_head` 的 legacy Stage3-200k checkpoint；其他缺键
+  继续严格拒绝。
+- [x] 在旧轨迹事件状态上蒸馏 Stage3 候选任务基础 logits。
+- [x] 从连续动作片段初始化 termination 和 minimum commitment。
+- [x] 使用从当前 potential 到精确终点 `Q` 的 event return 预训练 centralized
+  Critic。
+- [x] owner marginal head 不使用专家重复 owner 作为正监督；旧专家超过 3 个 owner
+  的状态只饱和记录为 3。
+- [x] 一次真实 CPU forward/backward/optimizer/checkpoint preflight 通过。
+- [ ] 通过 Slurm 运行最长约 4 小时的正式 10k GPU warm start。
+- [ ] 对 warm-start checkpoint 做未见轨迹离线验收；只验证避免随机初始化，不以离线
+  loss 宣布性能提升。
 
 ### V2-1：同步 PPO 正确性
 
@@ -242,10 +264,16 @@ APPO 最佳 checkpoint
 checkpoint 必须保存模型、optimizer/scheduler、AMP、policy version、schema
 fingerprint、normalizer、RNG、物理秒数、episode/event 数和 Encoder 解冻状态。
 
+V2-0 单步 preflight checkpoint 已验证上述字段，实际大小约 `367 MiB`。正式阶段应按
+1k 间隔独立保留恢复点，并预留 optimizer/多 checkpoint 的额外空间。
+
 ## 下一步
 
-- [ ] 用户审阅并最终批准 V2 正式设计文档。
-- [ ] 使用 writing-plans 编写分阶段实施计划。
-- [ ] 创建独立分支 `codex/event-joint-transformer-v2`。
-- [ ] 按测试驱动方式实现 V2-0，不直接启动正式 PPO/APPO。
-- [ ] 合成环境和真实单场 smoke 通过后，才申请正式训练资源。
+- [x] 用户审阅并最终批准 V2 正式设计文档。
+- [x] 使用 writing-plans 编写 V2-0 foundation 实施计划。
+- [x] 创建独立分支 `codex/event-joint-transformer-v2`。
+- [x] 按测试驱动方式实现 V2-0 foundation，未直接启动 PPO/APPO。
+- [ ] 提交 `scripts/train_event_v2_warm_start_slurm.sh`，完成 V2-0 正式 10k GPU
+  warm start 和未见轨迹离线验收。
+- [ ] 另写同步 PPO/Event Runtime 实施计划；合成环境与完整 3,600 秒真实 smoke 通过
+  后，才进入 Val 8+8。
