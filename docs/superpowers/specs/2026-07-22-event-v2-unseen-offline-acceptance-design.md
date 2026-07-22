@@ -16,7 +16,8 @@
 
 - split 固定为 `val_unseen`；annotation 固定为
   `data/annotations/val_unseen.json`，必须恰好包含 64 条轨迹；
-- `event_batch_size=8`，scene 顺序使用 annotation 原顺序；
+- scene 顺序使用 annotation 原顺序；正式 `event_batch_size` 在结果无关的 GPU smoke
+  中从 `{8,16,32,64,128,256,512}` 选择最大安全档位，随后锁定；
 - 每个 scene 只构造一次 `OfflineEventBatch`，同一个 CPU batch 依次送入随机基线和
   10k 模型，保证 scene、事件时间点、mask 和事实标签逐值相同；
 - 两个模型使用同一 V2 配置、同一 Stage3 checkpoint 和同一 loss 权重；唯一差异是
@@ -75,12 +76,24 @@ work_dirs/event_joint_transformer_v2/v2_0_unseen_offline/summary.json
 `local-10` 和独立日志。评估只做 forward，不写模型权重；GPU 不可用、显存已被占满、
 checkpoint 缺失或输出已存在且未显式允许覆盖时直接失败。
 
+## GPU 利用边界
+
+随机基线和 10k 模型同时常驻 GPU，forward 使用 BF16 `inference_mode` 和 SDPA。
+Slurm 包装先在固定 smoke scene 上按升序测试
+`{8,16,32,64,128,256,512}`，记录 `max_memory_allocated`、
+`max_memory_reserved` 和总显存；选择无 OOM 且峰值 reserved 不超过总显存 90% 的最大
+档位。正式 64 场运行开始后不得再改变 batch size。
+
+该探针只依据资源占用选择档位，不读取 loss 优劣，因此不会把 `val_unseen` 结果用于
+调参。如果 scene 的事实事件数小于候选 batch size，工具必须记录实际事件数；不得通过
+创建无用 tensor 或缓存重复模型来人为占满显存。
+
 ## 测试与运行顺序
 
 1. 单元测试覆盖 support 加权、相对变化、严格门槛、非有限值和不足 64 scene 的拒绝；
 2. tiny 模型测试覆盖随机/训练 checkpoint 严格加载及同 batch 对照；
 3. CLI/Slurm 静态测试覆盖 `aeos`、`local-10`、无 Basilisk/Test 和独立输出路径；
-4. 单 scene smoke；
+4. 单 scene GPU smoke 并锁定最大安全 `event_batch_size`；
 5. 64 条 `val_unseen` 正式运行一次；
 6. 校验 JSON、日志、scene 数、support、fingerprint 与 `accepted`，再更新 `TODO.md`
    和 `改进日志.md`。
