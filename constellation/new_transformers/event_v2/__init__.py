@@ -14,6 +14,14 @@ from .reward import (
     terminal_completion_quality,
     time_aware_gae,
 )
+from .transition import (
+    TRANSITION_SCHEMA_VERSION,
+    ActionTrace,
+    EventTransition,
+    JointEventAction,
+    transition_schema_definition,
+    transition_schema_fingerprint,
+)
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -26,4 +34,10 @@ __all__ = [
     'completion_potential',
     'terminal_completion_quality',
     'time_aware_gae',
+    'TRANSITION_SCHEMA_VERSION',
+    'ActionTrace',
+    'EventTransition',
+    'JointEventAction',
+    'transition_schema_definition',
+    'transition_schema_fingerprint',
 ]
