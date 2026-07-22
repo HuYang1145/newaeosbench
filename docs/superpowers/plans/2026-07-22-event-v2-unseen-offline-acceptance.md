@@ -70,9 +70,9 @@
 - 生成但不提交：`work_dirs/event_joint_transformer_v2/v2_0_unseen_offline/summary.json`
 - 生成但不提交：`work_dirs/eval_logs/event_v2_unseen_offline_<job>.log`
 
-1. 在隔离工作树运行：`/home/hy/miniconda3/envs/aeos/bin/python -m pytest tests/test_evaluate_event_v2_unseen_offline.py tests/test_event_v2_unseen_scripts.py tests/test_event_v2_offline.py tests/test_train_event_v2_warm_start.py -q`。
-2. 运行全量相关回归：`/home/hy/miniconda3/envs/aeos/bin/python -m pytest tests/test_event_v2*.py tests/test_train_event_v2_warm_start.py -q`，并运行 `git diff --check`。
-3. 将已验证提交本地合并回 `codex/offline-critic-ranking`，不暂存、不覆盖现有 M3 和用户改动。
+1. 在原分支运行：`/home/hy/miniconda3/envs/aeos/bin/python -m pytest tests/test_evaluate_event_v2_unseen_offline.py tests/test_event_v2_unseen_scripts.py tests/test_event_v2_offline.py tests/test_event_v2_warm_start.py -q`。
+2. 运行全量相关回归：`/home/hy/miniconda3/envs/aeos/bin/python -m pytest tests/test_event_v2*.py -q`，并运行 `git diff --check`。
+3. 按用户决定直接保留在 `codex/offline-critic-ranking`；只暂存本轮 V2 文件，不覆盖现有 M3 和用户改动。
 4. 使用 `nvidia-smi`、`nvidia-smi pmon -s um -c 3` 和进程列表获取新鲜 GPU 状态，然后用 `sbatch scripts/evaluate_event_v2_unseen_offline_slurm.sh` 提交；等待至完成，不中途终止。
 5. 校验 Slurm exit code、日志、summary JSON、64 scene、四类 support、有限值、checkpoint/schema/config 指纹、选定 batch 与峰值显存。`accepted=false` 是有效实验结论，不是运行失败。
 6. 将真实 job、batch、显存、四分量及验收结论写入 `TODO.md`；由于 `改进日志.md` 有用户未提交改动，本轮不自动修改它。
