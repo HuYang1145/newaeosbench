@@ -15,6 +15,7 @@ num_workers = 4
 log_interval = 50
 checkpoint_interval = 1_000
 amp = True
+amp_dtype = 'bfloat16'
 
 model = {
     'event_width': 256,

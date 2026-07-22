@@ -205,6 +205,7 @@ def _load_config(path: pathlib.Path) -> dict[str, Any]:
         'log_interval',
         'checkpoint_interval',
         'amp',
+        'amp_dtype',
         'model',
         'optimizer',
         'loss_weights',
@@ -230,6 +231,17 @@ def _device_from_argument(name: str) -> torch.device:
     if device.type == 'cuda' and not torch.cuda.is_available():
         raise RuntimeError('CUDA was requested but is unavailable')
     return device
+
+
+def resolve_amp_dtype(name: str) -> torch.dtype:
+    dtypes = {
+        'bfloat16': torch.bfloat16,
+        'float16': torch.float16,
+    }
+    try:
+        return dtypes[name]
+    except KeyError as error:
+        raise ValueError(f'unsupported AMP dtype: {name}') from error
 
 
 def parse_args() -> argparse.Namespace:
@@ -306,7 +318,11 @@ def main() -> None:
         eta_min=learning_rate * 0.05,
     )
     amp_enabled = bool(config['amp'] and device.type == 'cuda')
-    scaler = torch.amp.GradScaler(device.type, enabled=amp_enabled)
+    amp_dtype = resolve_amp_dtype(config['amp_dtype'])
+    scaler = torch.amp.GradScaler(
+        device.type,
+        enabled=amp_enabled and amp_dtype is torch.float16,
+    )
     fingerprint = config_fingerprint(config)
     counters = TrainingCounters()
     if args.resume is not None:
@@ -325,6 +341,7 @@ def main() -> None:
         'config_fingerprint': fingerprint,
         'parameters': parameter_count,
         'trainable_parameters': trainable_count,
+        'amp_dtype': str(amp_dtype) if amp_enabled else None,
         'start_step': counters.steps,
         'max_steps': max_steps,
     }, sort_keys=True))
@@ -342,6 +359,7 @@ def main() -> None:
         with torch.autocast(
             device_type=device.type,
             enabled=amp_enabled,
+            dtype=amp_dtype,
         ):
             losses = event_v2_offline_loss(
                 model,

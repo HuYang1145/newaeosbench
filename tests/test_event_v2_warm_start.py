@@ -11,6 +11,7 @@ from constellation.new_transformers.event_v2.model import (
 from constellation.new_transformers.event_v2.transition import (
     transition_schema_fingerprint,
 )
+from tools import train_event_v2_warm_start as warm_start_trainer
 from tools.train_event_v2_warm_start import (
     TrainingCounters,
     build_training_checkpoint,
@@ -55,6 +56,16 @@ def test_warm_start_config_freezes_stage3_and_uses_separate_output() -> None:
     assert config.model.event_width == 256
     assert config.max_steps == 10_000
     assert config.checkpoint_interval == 1_000
+    assert config.amp is True
+    assert config.amp_dtype == 'bfloat16'
+    assert warm_start_trainer.resolve_amp_dtype(config.amp_dtype) is (
+        torch.bfloat16
+    )
+
+
+def test_warm_start_rejects_unknown_amp_dtype() -> None:
+    with pytest.raises(ValueError, match='AMP dtype'):
+        warm_start_trainer.resolve_amp_dtype('float8')
 
 
 def test_config_fingerprint_is_stable_and_sensitive() -> None:
