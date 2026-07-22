@@ -20,6 +20,7 @@ from tools.evaluate_event_v2_unseen_offline import (
     cuda_memory_snapshot,
     decide_acceptance,
     evaluate_dataset,
+    validate_evaluation_scope,
     write_json_atomic,
 )
 
@@ -472,3 +473,20 @@ def test_cli_help_exposes_probe_and_formal_controls() -> None:
     assert '--limit' in result.stdout
     assert '--formal' in result.stdout
     assert '--overwrite' in result.stdout
+
+
+def test_formal_scope_rejects_any_annotation_other_than_val_unseen() -> None:
+    validate_evaluation_scope(
+        annotation_file='val_unseen.json',
+        formal=True,
+        limit=None,
+        dataset_scene_count=64,
+    )
+
+    with pytest.raises(ValueError, match='val_unseen.json'):
+        validate_evaluation_scope(
+            annotation_file='val_seen.json',
+            formal=True,
+            limit=None,
+            dataset_scene_count=64,
+        )

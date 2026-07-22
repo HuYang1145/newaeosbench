@@ -517,6 +517,29 @@ def _device_from_name(name: str) -> torch.device:
     return device
 
 
+def validate_evaluation_scope(
+    *,
+    annotation_file: str,
+    formal: bool,
+    limit: int | None,
+    dataset_scene_count: int | None,
+) -> None:
+    """在读取数据前锁定 split，并在构造后核对正式场景数。"""
+
+    annotation_name = Path(annotation_file).name
+    if 'test' in Path(annotation_name).stem.lower():
+        raise ValueError('Test annotations are forbidden in V2-0 acceptance')
+    if formal and annotation_name != 'val_unseen.json':
+        raise ValueError('formal evaluation requires val_unseen.json')
+    if formal and limit is not None:
+        raise ValueError('formal evaluation cannot use --limit')
+    if formal and dataset_scene_count is not None and dataset_scene_count != 64:
+        raise ValueError(
+            'formal val_unseen annotation must contain 64 scenes, '
+            f'got {dataset_scene_count}'
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Evaluate V2-0 warm start on fixed val_unseen trajectories',
@@ -550,10 +573,12 @@ def main() -> None:
         raise ValueError('event batch size must be positive')
     if args.limit is not None and args.limit <= 0:
         raise ValueError('limit must be positive')
-    if args.formal and args.limit is not None:
-        raise ValueError('formal evaluation cannot use --limit')
-    if 'test' in Path(args.annotation_file).stem.lower():
-        raise ValueError('Test annotations are forbidden in V2-0 acceptance')
+    validate_evaluation_scope(
+        annotation_file=args.annotation_file,
+        formal=args.formal,
+        limit=args.limit,
+        dataset_scene_count=None,
+    )
     if args.output.exists() and not args.overwrite:
         raise FileExistsError(f'output already exists: {args.output}')
 
@@ -576,10 +601,12 @@ def main() -> None:
         annotation_file=args.annotation_file,
         batch_size=args.event_batch_size,
     )
-    if args.formal and len(dataset) != 64:
-        raise ValueError(
-            f'formal val_unseen annotation must contain 64 scenes, got {len(dataset)}'
-        )
+    validate_evaluation_scope(
+        annotation_file=args.annotation_file,
+        formal=args.formal,
+        limit=args.limit,
+        dataset_scene_count=len(dataset),
+    )
     paired = build_paired_models(
         model_kwargs=config['model'],
         stage3_checkpoint=stage3_checkpoint,
