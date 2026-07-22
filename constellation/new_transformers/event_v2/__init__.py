@@ -35,6 +35,15 @@ from .actor import (
     AutoregressiveJointActor,
 )
 from .model import EventActorCriticOutput, EventJointActorCritic
+from .dataset import (
+    EventV2OfflineDataset,
+    OfflineEventBatch,
+    OfflineEventTargets,
+    build_capped_owner_counts,
+    build_commitment_targets,
+    compress_expert_actions_to_events,
+)
+from .offline import OfflineLosses, event_v2_offline_loss
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -64,4 +73,12 @@ __all__ = [
     'AutoregressiveJointActor',
     'EventActorCriticOutput',
     'EventJointActorCritic',
+    'EventV2OfflineDataset',
+    'OfflineEventBatch',
+    'OfflineEventTargets',
+    'build_capped_owner_counts',
+    'build_commitment_targets',
+    'compress_expert_actions_to_events',
+    'OfflineLosses',
+    'event_v2_offline_loss',
 ]
