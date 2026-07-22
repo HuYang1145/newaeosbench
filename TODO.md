@@ -14,8 +14,12 @@ Stage3 `JointModel` 并行存在，不覆盖 Stage3 checkpoint、M2/M3 结果或
 
 当前工作分支为 `codex/offline-critic-ranking`。V2 模型、旧轨迹事件数据、离线
 warm-start loss、checkpoint 和 Slurm 入口已经实现；121 个 V2/邻接旧回归测试通过。
-V2-0 正式 10k GPU warm start 已完成，但未见轨迹离线验收、同步 PPO 和 Basilisk Val
-尚未运行，因此仍没有完成率提高证据。
+V2-0 正式 10k GPU warm start 和 64 场 `val_unseen` 离线验收均已完成；同步 PPO 和
+Basilisk Val 尚未运行，因此仍没有完成率提高证据。离线验收设计和实施记录为：
+
+`docs/superpowers/specs/2026-07-22-event-v2-unseen-offline-acceptance-design.md`
+
+`docs/superpowers/plans/2026-07-22-event-v2-unseen-offline-acceptance.md`
 
 ## 目标
 
@@ -182,8 +186,23 @@ sum(event_reward) = Q_final
 - [x] 一次真实 CPU forward/backward/optimizer/checkpoint preflight 通过。
 - [x] 通过 Slurm 完成正式 10k GPU warm start；job `915` 用时 `01:06:44`、
   `COMPLETED 0:0`，保存 1k–10k 共 10 个恢复点。
-- [ ] 对 warm-start checkpoint 做未见轨迹离线验收；只验证避免随机初始化，不以离线
-  loss 宣布性能提升。
+- [x] 对 warm-start checkpoint 完成未见轨迹离线验收；job `965` 使用固定 seed
+  `3407`、同一 Stage3-200k backbone、同一批 64 场 `val_unseen` 事实事件，
+  `COMPLETED 0:0`，用时 `00:22:55`。
+- [x] 离线验收严格通过：加权 `total` 从 `4.797582` 降至 `0.751693`
+  （下降 `84.33%`）；`task_distillation` 从 `2.662716` 降至 `0.257852`，
+  `termination` 从 `0.618425` 降至 `0.00001289`，`commitment` 从 `1.495417`
+  降至 `0.491663`，`value` 从 `0.0210251` 降至 `0.00216482`，四个分量均严格下降。
+- [x] 四类事实 support 分别为 `26073/510846/18815/26931`；64 个 scene id 与
+  annotation 原顺序逐值一致，全部数值有限，checkpoint/schema/config 指纹匹配，
+  未调用 Basilisk、未读取 Test。
+- [x] 显存探针改用固定最坏 shape 的 scene index `36`；batch `512` probe 峰值
+  reserved `89.61%`，正式 64 场峰值 allocated `21.999 GB`、reserved `24.142 GB`
+  （`95.61%`），使用 BF16、SDPA、`inference_mode`、pinned transfer 和
+  `expandable_segments`。首次 job `947` 因外部作业中途抢占显存而 OOM，不作为模型
+  结果；修复探针和 allocator 后 job `965` 成功。
+- [x] 本验收只证明 10k warm start 明显优于随机 V2 初始化，不能写成完成率提高；下一
+  步仍必须进入 V2-1 同步 PPO 正确性阶段。
 
 ### V2-1：同步 PPO 正确性
 
