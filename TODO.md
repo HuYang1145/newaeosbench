@@ -12,10 +12,10 @@ Stage3 `JointModel` 并行存在，不覆盖 Stage3 checkpoint、M2/M3 结果或
 
 `docs/superpowers/plans/2026-07-21-event-joint-transformer-v2-foundation.md`
 
-当前工作分支为 `codex/event-joint-transformer-v2`。V2 模型、旧轨迹事件数据、离线
-warm-start loss、checkpoint 和 Slurm 入口已经实现；119 个 V2/邻接旧回归测试及一次
-真实单步 CPU preflight 已通过。尚未运行 V2-0 正式 10k GPU warm start，也没有任何
-完成率提高证据。
+当前工作分支为 `codex/offline-critic-ranking`。V2 模型、旧轨迹事件数据、离线
+warm-start loss、checkpoint 和 Slurm 入口已经实现；121 个 V2/邻接旧回归测试通过。
+V2-0 正式 10k GPU warm start 已完成，但未见轨迹离线验收、同步 PPO 和 Basilisk Val
+尚未运行，因此仍没有完成率提高证据。
 
 ## 目标
 
@@ -180,7 +180,8 @@ sum(event_reward) = Q_final
 - [x] owner marginal head 不使用专家重复 owner 作为正监督；旧专家超过 3 个 owner
   的状态只饱和记录为 3。
 - [x] 一次真实 CPU forward/backward/optimizer/checkpoint preflight 通过。
-- [ ] 通过 Slurm 运行最长约 4 小时的正式 10k GPU warm start。
+- [x] 通过 Slurm 完成正式 10k GPU warm start；job `915` 用时 `01:06:44`、
+  `COMPLETED 0:0`，保存 1k–10k 共 10 个恢复点。
 - [ ] 对 warm-start checkpoint 做未见轨迹离线验收；只验证避免随机初始化，不以离线
   loss 宣布性能提升。
 
@@ -273,7 +274,22 @@ V2-0 单步 preflight checkpoint 已验证上述字段，实际大小约 `367 Mi
 - [x] 使用 writing-plans 编写 V2-0 foundation 实施计划。
 - [x] 创建独立分支 `codex/event-joint-transformer-v2`。
 - [x] 按测试驱动方式实现 V2-0 foundation，未直接启动 PPO/APPO。
-- [ ] 提交 `scripts/train_event_v2_warm_start_slurm.sh`，完成 V2-0 正式 10k GPU
-  warm start 和未见轨迹离线验收。
+- [x] 提交并完成 V2-0 正式 10k GPU warm start。
+  - 2026-07-22 首次提交的 Slurm job `895` 因单 GRES 固定绑定到已被外部进程占满的
+    物理 GPU 0，在模型搬入 CUDA 时 OOM 退出；模型训练尚未开始。
+  - 最小 Slurm 诊断确认申请两张 GRES 后可在分配范围 `0,1` 内单独使用空闲 GPU 1；
+    job `905` 随后暴露 `delta_t.expand()` 的 pinned-memory 重叠问题，已由 commit
+    `8be19de` 修复。
+  - job `906` 的 CUDA preflight 通过，但正式 batch 8 暴露 FP16 梯度溢出；FP32/BF16
+    对照均连续两步有限，正式配置已由 commit `be639a1` 切换到 BF16。
+  - 正式 10k 重试 job `915` 已完成（`COMPLETED 0:0`，用时 `01:06:44`）；最终
+    checkpoint 为 `checkpoint_step_010000.pth`。
+  - 最终 checkpoint 的 447 个模型 tensor 和 126 个 optimizer 浮点 tensor 均有限；
+    1k→5k 间 397 个冻结骨干 tensor 逐值不变，50 个 V2 tensor 中 42 个已更新。
+  - 训练日志的前 1k/后 1k 窗口平均 total loss 为 `1.3368/0.5957`；该结果只证明
+    离线 warm start 收敛，不代表 CR/PCR/WCR 已提高。
+  - 日志：`work_dirs/eval_logs/event_v2_warm_start_915.log`。
+  - checkpoint 目录：`work_dirs/event_joint_transformer_v2/v2_0_warm_start/`。
+- [ ] 对 10k checkpoint 完成固定 `val_unseen` 轨迹离线验收。
 - [ ] 另写同步 PPO/Event Runtime 实施计划；合成环境与完整 3,600 秒真实 smoke 通过
   后，才进入 Val 8+8。
