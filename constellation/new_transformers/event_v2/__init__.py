@@ -7,6 +7,13 @@ from .state import (
     build_commitment_mask,
     build_replan_order,
 )
+from .reward import (
+    GAEOutput,
+    build_completion_event_rewards,
+    completion_potential,
+    terminal_completion_quality,
+    time_aware_gae,
+)
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -14,4 +21,9 @@ __all__ = [
     'EventStateTensors',
     'build_commitment_mask',
     'build_replan_order',
+    'GAEOutput',
+    'build_completion_event_rewards',
+    'completion_potential',
+    'terminal_completion_quality',
+    'time_aware_gae',
 ]
