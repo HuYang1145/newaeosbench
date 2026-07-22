@@ -20,6 +20,8 @@ OUTPUT="${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_0_unseen_offline/sum
 JOB_ID="${SLURM_JOB_ID:-manual}"
 PROBE_ROOT="${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_0_unseen_offline/probes"
 MAX_RESERVED_FRACTION="${MAX_RESERVED_FRACTION:-0.90}"
+# 固定 annotation 中 index 36 的 capped edge volume 最大，用它覆盖最坏 shape。
+PROBE_SCENE_INDEX="${PROBE_SCENE_INDEX:-36}"
 BATCH_CANDIDATES=(8 16 32 64 128 256 512)
 
 cd "${ROOT_DIR}"
@@ -58,6 +60,7 @@ for batch_size in "${BATCH_CANDIDATES[@]}"; do
     --annotation-file "${ANNOTATION}" \
     --event-batch-size "${batch_size}" \
     --limit 1 \
+    --scene-index "${PROBE_SCENE_INDEX}" \
     --device cuda \
     --output "${probe_output}" \
     --overwrite; then

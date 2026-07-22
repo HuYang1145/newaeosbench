@@ -18,8 +18,10 @@ def test_unseen_acceptance_slurm_script_has_fixed_scope_and_gpu_probe() -> None:
     assert 'event_v2_unseen_offline_%j.log' in script
     assert 'v2_0_unseen_offline/summary.json' in script
     assert 'BATCH_CANDIDATES=(8 16 32 64 128 256 512)' in script
+    assert 'PROBE_SCENE_INDEX="${PROBE_SCENE_INDEX:-36}"' in script
     assert 'MAX_RESERVED_FRACTION="${MAX_RESERVED_FRACTION:-0.90}"' in script
     assert '--limit 1' in script
+    assert '--scene-index "${PROBE_SCENE_INDEX}"' in script
     assert '--formal' in script
     assert 'memory.used' in script or 'mem_get_info' in script
     assert os.access(SCRIPT, os.X_OK)

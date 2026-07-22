@@ -245,12 +245,21 @@ def evaluate_dataset(
     device: torch.device,
     seed: int,
     limit: int | None = None,
+    scene_index: int | None = None,
     loss_fn=event_v2_offline_loss,
 ) -> list[dict[str, Any]]:
     """每场只构造一个 batch，再依次评价两个模型。"""
 
-    scene_count = len(dataset) if limit is None else min(len(dataset), limit)
-    if scene_count <= 0:
+    if scene_index is not None:
+        if not 0 <= scene_index < len(dataset):
+            raise IndexError('scene index is outside the dataset')
+        if limit != 1:
+            raise ValueError('fixed scene probe requires --limit 1')
+        scene_indices = (scene_index,)
+    else:
+        scene_count = len(dataset) if limit is None else min(len(dataset), limit)
+        scene_indices = range(scene_count)
+    if not scene_indices:
         raise ValueError('evaluation requires at least one scene')
     records: list[dict[str, Any]] = []
     loss_arguments = {
@@ -261,7 +270,7 @@ def evaluate_dataset(
     }
     amp_enabled = device.type == 'cuda'
     with torch.inference_mode():
-        for index in range(scene_count):
+        for index in scene_indices:
             _set_seed(seed + index, device)
             cpu_batch = dataset[index]
             support = batch_supports(cpu_batch)
@@ -523,6 +532,7 @@ def validate_evaluation_scope(
     formal: bool,
     limit: int | None,
     dataset_scene_count: int | None,
+    scene_index: int | None = None,
 ) -> None:
     """在读取数据前锁定 split，并在构造后核对正式场景数。"""
 
@@ -533,6 +543,10 @@ def validate_evaluation_scope(
         raise ValueError('formal evaluation requires val_unseen.json')
     if formal and limit is not None:
         raise ValueError('formal evaluation cannot use --limit')
+    if formal and scene_index is not None:
+        raise ValueError('formal evaluation cannot select a scene index')
+    if scene_index is not None and limit != 1:
+        raise ValueError('fixed scene probe requires --limit 1')
     if formal and dataset_scene_count is not None and dataset_scene_count != 64:
         raise ValueError(
             'formal val_unseen annotation must contain 64 scenes, '
@@ -555,6 +569,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument('--event-batch-size', type=int, required=True)
     parser.add_argument('--limit', type=int)
+    parser.add_argument('--scene-index', type=int)
     parser.add_argument('--seed', type=int, default=3407)
     parser.add_argument('--device', default='auto')
     parser.add_argument('--formal', action='store_true')
@@ -578,6 +593,7 @@ def main() -> None:
         formal=args.formal,
         limit=args.limit,
         dataset_scene_count=None,
+        scene_index=args.scene_index,
     )
     if args.output.exists() and not args.overwrite:
         raise FileExistsError(f'output already exists: {args.output}')
@@ -606,6 +622,7 @@ def main() -> None:
         formal=args.formal,
         limit=args.limit,
         dataset_scene_count=len(dataset),
+        scene_index=args.scene_index,
     )
     paired = build_paired_models(
         model_kwargs=config['model'],
@@ -631,6 +648,7 @@ def main() -> None:
         device=device,
         seed=args.seed,
         limit=args.limit,
+        scene_index=args.scene_index,
     )
     resources = cuda_memory_snapshot(
         device,

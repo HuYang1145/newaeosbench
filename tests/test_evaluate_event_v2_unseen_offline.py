@@ -379,6 +379,47 @@ def test_evaluate_dataset_builds_once_and_reuses_identical_batch() -> None:
     assert records[0]['trained']['task_distillation'] == pytest.approx(1.0)
 
 
+def test_evaluate_dataset_can_probe_a_fixed_worst_shape_scene() -> None:
+    class FakeDataset:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def __len__(self) -> int:
+            return 3
+
+        def __getitem__(self, index: int):
+            self.calls.append(index)
+            return _fake_batch(index)
+
+    dataset = FakeDataset()
+
+    def fake_loss(model, batch, **_):
+        value = torch.tensor(1.0)
+        return SimpleNamespace(
+            total=value * 4,
+            task_distillation=value,
+            termination=value,
+            commitment=value,
+            value=value,
+        )
+
+    records = evaluate_dataset(
+        dataset=dataset,
+        random_model='random',
+        trained_model='trained',
+        loss_weights={name: 1.0 for name in LOSS_WEIGHTS},
+        device=torch.device('cpu'),
+        seed=3407,
+        limit=1,
+        scene_index=2,
+        loss_fn=fake_loss,
+    )
+
+    assert dataset.calls == [2]
+    assert records[0]['scene_index'] == 2
+    assert records[0]['scene_id'] == 102
+
+
 def test_json_writer_refuses_to_overwrite_without_explicit_permission(
     tmp_path,
 ) -> None:
@@ -471,6 +512,7 @@ def test_cli_help_exposes_probe_and_formal_controls() -> None:
     assert result.returncode == 0, result.stderr
     assert '--event-batch-size' in result.stdout
     assert '--limit' in result.stdout
+    assert '--scene-index' in result.stdout
     assert '--formal' in result.stdout
     assert '--overwrite' in result.stdout
 
@@ -489,4 +531,13 @@ def test_formal_scope_rejects_any_annotation_other_than_val_unseen() -> None:
             formal=True,
             limit=None,
             dataset_scene_count=64,
+        )
+
+    with pytest.raises(ValueError, match='scene index'):
+        validate_evaluation_scope(
+            annotation_file='val_unseen.json',
+            formal=True,
+            limit=None,
+            dataset_scene_count=64,
+            scene_index=36,
         )
