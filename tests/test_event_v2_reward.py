@@ -4,13 +4,15 @@ import torch
 from constellation.new_transformers.event_v2.reward import (
     build_completion_event_rewards,
     completion_potential,
+    completion_task_weights,
     terminal_completion_quality,
     time_aware_gae,
 )
 
 
 def test_completion_reward_telescopes_to_exact_q() -> None:
-    weights = torch.tensor([0.3, 0.7])
+    required_duration = torch.tensor([10., 10.])
+    weights = completion_task_weights(required_duration)
     progress = [
         torch.tensor([0., 0.]),
         torch.tensor([5., 0.]),
@@ -19,12 +21,13 @@ def test_completion_reward_telescopes_to_exact_q() -> None:
 
     rewards = build_completion_event_rewards(
         progress=progress,
-        required_duration=torch.tensor([10., 10.]),
+        required_duration=required_duration,
         task_weights=weights,
         completed=torch.tensor([True, False]),
     )
 
-    torch.testing.assert_close(sum(rewards), torch.tensor(0.3))
+    # CR=0.5, PCR=0.75, WCR=0.5，因此 Q=0.55。
+    torch.testing.assert_close(sum(rewards), torch.tensor(0.55))
 
 
 def test_terminal_correction_reclaims_unfinished_partial_progress() -> None:
@@ -35,7 +38,8 @@ def test_terminal_correction_reclaims_unfinished_partial_progress() -> None:
         completed=torch.tensor([False]),
     )
 
-    torch.testing.assert_close(rewards[0], torch.tensor(0.))
+    # 未完成任务仍保留 PCR 的 0.2 * 0.9。
+    torch.testing.assert_close(rewards[0], torch.tensor(0.18))
 
 
 def test_completion_reward_supports_batched_scenes() -> None:
@@ -45,11 +49,13 @@ def test_completion_reward_supports_batched_scenes() -> None:
             torch.tensor([[10., 5.], [0., 10.]]),
         ],
         required_duration=torch.tensor([[10., 10.], [10., 10.]]),
-        task_weights=torch.tensor([[0.3, 0.7], [0.2, 0.8]]),
+        task_weights=completion_task_weights(
+            torch.tensor([[10., 10.], [10., 10.]]),
+        ),
         completed=torch.tensor([[True, False], [False, True]]),
     )
 
-    torch.testing.assert_close(rewards[0], torch.tensor([0.3, 0.8]))
+    torch.testing.assert_close(rewards[0], torch.tensor([0.55, 0.5]))
 
 
 def test_potential_clamps_progress_to_required_duration() -> None:
@@ -62,13 +68,21 @@ def test_potential_clamps_progress_to_required_duration() -> None:
     torch.testing.assert_close(potential, torch.tensor([0.6]))
 
 
-def test_terminal_quality_only_counts_completed_tasks() -> None:
+def test_terminal_quality_matches_cr_pcr_and_wcr() -> None:
     quality = terminal_completion_quality(
+        progress=torch.tensor([[10., 5.], [10., 10.]]),
+        required_duration=torch.tensor([[10., 10.], [10., 10.]]),
         completed=torch.tensor([[True, False], [True, True]]),
-        task_weights=torch.tensor([[0.4, 0.6], [0.2, 0.8]]),
     )
 
-    torch.testing.assert_close(quality, torch.tensor([0.4, 1.0]))
+    torch.testing.assert_close(quality, torch.tensor([0.55, 1.0]))
+
+
+def test_completion_task_weights_match_dense_q_surrogate() -> None:
+    weights = completion_task_weights(torch.tensor([10., 30.]))
+
+    torch.testing.assert_close(weights, torch.tensor([0.45, 0.55]))
+    torch.testing.assert_close(weights.sum(), torch.tensor(1.0))
 
 
 def test_time_aware_gae_uses_physical_delta_t() -> None:

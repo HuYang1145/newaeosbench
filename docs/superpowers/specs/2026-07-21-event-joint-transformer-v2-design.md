@@ -236,11 +236,19 @@ learner 重算时必须复用行为侧保存的物理 mask、卫星顺序和 own
 
 ### 8.1 完成质量权重
 
-使用现有 Evaluator 的 CR/PCR/WCR 任务权重，为每个任务导出非负权重 `omega_i`，
-使终局完成指标可以写成：
+使用现有 `CompletionRateEvaluator` 的精确定义：`CR` 和 `WCR` 只计完成任务，
+`PCR` 计所有任务的终点进度比例。因此终局质量必须直接重建为：
 
 ```text
-Q_final = sum_i omega_i * completed_i
+Q_final = 0.6*mean(completed_i)
+        + 0.2*mean(progress_ratio_i)
+        + 0.2*sum(duration_i*completed_i)/sum(duration_i)
+```
+
+不能把 `PCR` 错写成只由 `completed_i` 决定。dense potential 使用非负代理权重：
+
+```text
+omega_i = 0.8/N + 0.2*duration_i/sum(duration)
 ```
 
 任务当前进度比例为：
@@ -277,8 +285,9 @@ r_terminal += Q_final - Phi(s_terminal)
 sum_e r_e = Q_final
 ```
 
-部分进度为策略提供早期信号，但未完成任务的临时收益会在终点被精确收回。第一阶段
-不加入 TAT、功耗或切换惩罚；这些指标只记录，不参与梯度。
+部分进度为策略提供早期信号；终点校正会收回 CR/WCR 代理中未完成的部分，但保留
+Evaluator 中 PCR 对未完成任务真实部分进度的 `0.2` 权重。第一阶段不加入 TAT、
+功耗或切换惩罚；这些指标只记录，不参与梯度。
 
 ### 8.3 半马尔可夫 GAE
 

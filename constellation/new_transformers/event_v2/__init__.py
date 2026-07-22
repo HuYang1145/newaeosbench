@@ -11,6 +11,7 @@ from .reward import (
     GAEOutput,
     build_completion_event_rewards,
     completion_potential,
+    completion_task_weights,
     terminal_completion_quality,
     time_aware_gae,
 )
@@ -44,6 +45,7 @@ __all__ = [
     'GAEOutput',
     'build_completion_event_rewards',
     'completion_potential',
+    'completion_task_weights',
     'terminal_completion_quality',
     'time_aware_gae',
     'TRANSITION_SCHEMA_VERSION',
