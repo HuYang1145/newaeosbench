@@ -1,4 +1,7 @@
 import math
+from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,8 +14,13 @@ from constellation.new_transformers.model import Model
 from tools.evaluate_event_v2_unseen_offline import (
     aggregate_weighted_losses,
     audit_training_checkpoint,
+    batch_supports,
+    build_summary,
     build_paired_models,
+    cuda_memory_snapshot,
     decide_acceptance,
+    evaluate_dataset,
+    write_json_atomic,
 )
 
 
@@ -285,3 +293,182 @@ def test_paired_model_loader_rejects_non_strict_state_dict(tmp_path) -> None:
             seed=3407,
             device=torch.device('cpu'),
         )
+
+
+def _fake_batch(scene_index: int = 0):
+    return SimpleNamespace(
+        stage3_batch=SimpleNamespace(
+            annotation_id=100 + scene_index,
+            time_steps=[2, 7],
+            constellation_mask=torch.tensor([
+                [True, True],
+                [True, False],
+            ]),
+        ),
+        targets=SimpleNamespace(
+            task_observed=torch.tensor([
+                [True, False],
+                [True, True],
+            ]),
+            termination_observed=torch.tensor([
+                [False, True],
+                [True, True],
+            ]),
+            commitment_observed=torch.tensor([
+                [True, True],
+                [False, True],
+            ]),
+            value_returns=torch.tensor([0.5, 0.25]),
+        ),
+    )
+
+
+def test_batch_supports_respect_observed_and_satellite_masks() -> None:
+    assert batch_supports(_fake_batch()) == {
+        'task_distillation': 2,
+        'termination': 2,
+        'commitment': 2,
+        'value': 2,
+    }
+
+
+def test_evaluate_dataset_builds_once_and_reuses_identical_batch() -> None:
+    class FakeDataset:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int):
+            self.calls.append(index)
+            return _fake_batch(index)
+
+    dataset = FakeDataset()
+    seen: dict[int, list[int]] = {0: [], 1: []}
+
+    def fake_loss(model, batch, **_):
+        scene_index = batch.stage3_batch.annotation_id - 100
+        seen[scene_index].append(id(batch))
+        base = 2.0 if model == 'random' else 1.0
+        value = torch.tensor(base)
+        return SimpleNamespace(
+            total=value * 4,
+            task_distillation=value,
+            termination=value,
+            commitment=value,
+            value=value,
+        )
+
+    records = evaluate_dataset(
+        dataset=dataset,
+        random_model='random',
+        trained_model='trained',
+        loss_weights={name: 1.0 for name in LOSS_WEIGHTS},
+        device=torch.device('cpu'),
+        seed=3407,
+        loss_fn=fake_loss,
+    )
+
+    assert dataset.calls == [0, 1]
+    assert all(len(ids) == 2 and ids[0] == ids[1] for ids in seen.values())
+    assert [record['scene_id'] for record in records] == [100, 101]
+    assert all(record['event_times'] == [2, 7] for record in records)
+    assert records[0]['random']['task_distillation'] == pytest.approx(2.0)
+    assert records[0]['trained']['task_distillation'] == pytest.approx(1.0)
+
+
+def test_json_writer_refuses_to_overwrite_without_explicit_permission(
+    tmp_path,
+) -> None:
+    path = tmp_path / 'summary.json'
+    write_json_atomic(path, {'first': True}, overwrite=False)
+
+    with pytest.raises(FileExistsError, match='already exists'):
+        write_json_atomic(path, {'second': True}, overwrite=False)
+
+    write_json_atomic(path, {'second': True}, overwrite=True)
+    assert 'second' in path.read_text()
+
+
+def test_memory_snapshot_has_stable_audit_fields_on_cpu() -> None:
+    snapshot = cuda_memory_snapshot(
+        torch.device('cpu'),
+        requested_event_batch_size=64,
+        maximum_actual_events=11,
+    )
+
+    assert snapshot == {
+        'device': 'cpu',
+        'device_name': None,
+        'requested_event_batch_size': 64,
+        'maximum_actual_events': 11,
+        'max_memory_allocated_bytes': None,
+        'max_memory_reserved_bytes': None,
+        'total_memory_bytes': None,
+        'max_reserved_fraction': None,
+    }
+
+
+def test_summary_records_fixed_scope_and_strict_formal_decision() -> None:
+    passing_scene = _scene(
+        random_losses=(2.0, 2.0, 2.0, 2.0),
+        trained_losses=(1.0, 1.0, 1.0, 1.0),
+        supports=(1, 1, 1, 1),
+    )
+    records = [
+        {
+            **passing_scene,
+            'scene_index': index,
+            'scene_id': 1000 + index,
+            'event_times': [1],
+            'actual_events': 1,
+        }
+        for index in range(64)
+    ]
+    summary = build_summary(
+        records=records,
+        loss_weights=LOSS_WEIGHTS,
+        checkpoint_audit={
+            'strict_model_load': True,
+            'backbone_exact_match': True,
+        },
+        resources={'device': 'cpu'},
+        formal=True,
+        event_batch_size=8,
+        annotation_file='val_unseen.json',
+    )
+
+    assert summary['decision'] == {'accepted': True, 'reasons': []}
+    assert summary['scope'] == {
+        'split': 'val_unseen',
+        'annotation_file': 'val_unseen.json',
+        'expected_scenes': 64,
+        'processed_scenes': 64,
+        'event_batch_size': 8,
+        'formal': True,
+    }
+    assert summary['audit']['called_basilisk'] is False
+    assert summary['audit']['read_test'] is False
+    assert len(summary['scenes']) == 64
+
+
+def test_cli_help_exposes_probe_and_formal_controls() -> None:
+    root = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            '/home/hy/miniconda3/envs/aeos/bin/python',
+            'tools/evaluate_event_v2_unseen_offline.py',
+            '--help',
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert '--event-batch-size' in result.stdout
+    assert '--limit' in result.stdout
+    assert '--formal' in result.stdout
+    assert '--overwrite' in result.stdout
