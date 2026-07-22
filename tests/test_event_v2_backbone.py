@@ -158,6 +158,27 @@ def test_stage3_loader_rejects_unexpected_checkpoint_parameter() -> None:
         backbone.load_stage3_state_dict(state_dict)
 
 
+def test_stage3_loader_accepts_legacy_checkpoint_without_duration_head() -> None:
+    source = Model(**_model_kwargs())
+    state_dict = dict(source.state_dict())
+    state_dict.pop('_transformer._time_model._duration_head.weight')
+    state_dict.pop('_transformer._time_model._duration_head.bias')
+    backbone = Stage3FeatureBackbone(**_model_kwargs(), edge_width=6)
+
+    backbone.load_stage3_state_dict(state_dict)
+
+    torch.testing.assert_close(
+        backbone.transformer._time_model._duration_head.weight,
+        torch.zeros_like(
+            backbone.transformer._time_model._duration_head.weight,
+        ),
+    )
+    torch.testing.assert_close(
+        backbone.transformer._time_model._duration_head.bias,
+        torch.zeros_like(backbone.transformer._time_model._duration_head.bias),
+    )
+
+
 @pytest.mark.parametrize(
     ('encoder_layers', 'decoder_layers'),
     [(-1, 0), (0, -1), (3, 0), (0, 3)],

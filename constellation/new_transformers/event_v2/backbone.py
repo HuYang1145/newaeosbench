@@ -147,17 +147,34 @@ class Stage3FeatureBackbone(nn.Module):
                 continue
             normalized[key] = value
 
-        missing = sorted(expected - set(normalized))
-        if missing:
+        missing = expected - set(normalized)
+        legacy_optional = {
+            '_time_model._duration_head.weight',
+            '_time_model._duration_head.bias',
+        }
+        required_missing = sorted(missing - legacy_optional)
+        if required_missing:
             raise ValueError(
-                'missing Stage3 backbone keys: ' + ', '.join(missing[:8])
+                'missing Stage3 backbone keys: '
+                + ', '.join(required_missing[:8])
             )
         if unexpected:
             raise ValueError(
                 'unexpected Stage3 backbone keys: '
                 + ', '.join(sorted(unexpected)[:8])
             )
-        self.transformer.load_state_dict(normalized, strict=True)
+        if missing:
+            with torch.no_grad():
+                self.transformer._time_model._duration_head.weight.zero_()
+                self.transformer._time_model._duration_head.bias.zero_()
+        incompatible = self.transformer.load_state_dict(
+            normalized,
+            strict=False,
+        )
+        if set(incompatible.missing_keys) != missing:
+            raise RuntimeError('Stage3 legacy missing-key audit is inconsistent')
+        if incompatible.unexpected_keys:
+            raise RuntimeError('Stage3 loader produced unexpected keys')
 
     def forward(
         self,
