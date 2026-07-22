@@ -28,6 +28,11 @@ from .critic import (
     EventStateEncoder,
     EventStateEncoding,
 )
+from .actor import (
+    ActionEvaluation,
+    ActorOutput,
+    AutoregressiveJointActor,
+)
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -51,4 +56,7 @@ __all__ = [
     'CentralizedValueCritic',
     'EventStateEncoder',
     'EventStateEncoding',
+    'ActionEvaluation',
+    'ActorOutput',
+    'AutoregressiveJointActor',
 ]
