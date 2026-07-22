@@ -136,20 +136,20 @@ git commit -m "feat: add event v2 state schema"
 
 ```python
 def test_completion_reward_telescopes_to_exact_q() -> None:
-    weights = torch.tensor([0.3, 0.7])
+    duration = torch.tensor([10., 10.])
+    weights = completion_task_weights(duration)
     progress = [
         torch.tensor([0., 0.]),
         torch.tensor([5., 0.]),
         torch.tensor([10., 5.]),
     ]
-    duration = torch.tensor([10., 10.])
     rewards = build_completion_event_rewards(
         progress=progress,
         required_duration=duration,
         task_weights=weights,
         completed=torch.tensor([True, False]),
     )
-    torch.testing.assert_close(sum(rewards), torch.tensor(0.3))
+    torch.testing.assert_close(sum(rewards), torch.tensor(0.55))
 
 
 def test_time_aware_gae_uses_physical_delta_t() -> None:
@@ -167,7 +167,8 @@ def test_time_aware_gae_uses_physical_delta_t() -> None:
     torch.testing.assert_close(result.advantages, torch.stack((expected_first, expected_last)))
 ```
 
-同时测试非法 duration/weights、未完成临时 progress 在 terminal correction 被收回、`done=True` 后不 bootstrap、所有输出 finite。
+同时测试非法 duration/weights、未完成任务的 CR/WCR surrogate 在 terminal correction
+被收回但 PCR 真实部分进度保留、`done=True` 后不 bootstrap、所有输出 finite。
 
 - [ ] **Step 2: 运行失败测试**
 
@@ -180,14 +181,18 @@ Expected: import 失败。
 - [ ] **Step 3: 实现纯 reward API**
 
 `GAEOutput` 包含 `advantages` 和 `returns` 两个 tensor。公开函数固定为
+`completion_task_weights(required_duration)`、
 `completion_potential(progress, required_duration, task_weights)`、
-`terminal_completion_quality(completed, task_weights)`、
+`terminal_completion_quality(progress, required_duration, completed)`、
 `build_completion_event_rewards(progress, required_duration, task_weights,
 completed)` 和 `time_aware_gae(rewards, values, next_values, delta_t, done,
-lambda_base=0.95, reference_seconds=5.0)`；类型分别按测试输入推导，前三个返回 tensor、
-tensor、tensor list，最后一个返回 `GAEOutput`。
+lambda_base=0.95, reference_seconds=5.0)`；类型分别按测试输入推导，前四个返回 tensor、
+tensor、tensor、tensor list，最后一个返回 `GAEOutput`。
 
-实现中 `gamma=1`；`lambda_e = lambda_base ** (delta_t/reference_seconds)`；terminal reward 添加 `Q_final - Phi_terminal`。不接受负权重或非正 required duration。
+实现中 `gamma=1`；`lambda_e = lambda_base ** (delta_t/reference_seconds)`；terminal
+reward 添加 `Q_final - Phi_terminal`。`Q_final` 必须直接按现有 Evaluator 的
+`0.6CR+0.2PCR+0.2WCR` 重建，不能把未完成任务的 PCR 部分进度清零。不接受负权重
+或非正 required duration。
 
 - [ ] **Step 4: 运行测试并提交**
 
@@ -241,7 +246,8 @@ git commit -m "feat: define event v2 transition schema"
 - task tokens 等于旧 `_encoder` 输出；
 - satellite tokens 等于旧 `_decoder` 返回的第三项；
 - edge logits 等于旧 decoder 的 task logits；
-- `freeze()` 后全部参数 `requires_grad=False`；
+- `freeze()` 后全部 Stage3 checkpoint 参数 `requires_grad=False`，V2 新建的 edge
+  projection 保持可训练；
 - forward 参数列表不包含 `is_visible`；
 - checkpoint 仅允许 V2 新头缺键，不允许 Stage3 backbone unexpected/missing key。
 
@@ -253,7 +259,9 @@ git commit -m "feat: define event v2 transition schema"
 `load_stage3_state_dict(state_dict)` 和与现有 `Transformer.forward()` 前八个参数完全一致的
 `forward()`；返回 `Stage3BackboneOutput`。
 
-`edge_features` 使用 `satellite_projection(satellite_tokens)[:, :, None, :] + task_projection(task_tokens)[:, None, :, :]`，而不是调用 Basilisk/TimeModel 生成未来特征。teacher logits 保持旧 Stage3 计算路径，供 V2-0 蒸馏。
+`edge_features` 使用 `satellite_projection(satellite_tokens)[:, :, None, :] + task_projection(task_tokens)[:, None, :, :]`，而不是调用 Basilisk/TimeModel 生成未来特征。
+两个 projection 属于 V2 新模块，不能随 Stage3 checkpoint 参数冻结。teacher logits
+保持旧 Stage3 计算路径，供 V2-0 蒸馏。
 
 - [ ] **Step 3: 运行测试并提交**
 
