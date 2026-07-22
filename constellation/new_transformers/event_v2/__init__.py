@@ -22,6 +22,7 @@ from .transition import (
     transition_schema_definition,
     transition_schema_fingerprint,
 )
+from .backbone import Stage3BackboneOutput, Stage3FeatureBackbone
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -40,4 +41,6 @@ __all__ = [
     'JointEventAction',
     'transition_schema_definition',
     'transition_schema_fingerprint',
+    'Stage3BackboneOutput',
+    'Stage3FeatureBackbone',
 ]

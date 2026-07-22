@@ -241,7 +241,8 @@ git commit -m "feat: define event v2 transition schema"
 - task tokens 等于旧 `_encoder` 输出；
 - satellite tokens 等于旧 `_decoder` 返回的第三项；
 - edge logits 等于旧 decoder 的 task logits；
-- `freeze()` 后全部参数 `requires_grad=False`；
+- `freeze()` 后全部 Stage3 checkpoint 参数 `requires_grad=False`，V2 新建的 edge
+  projection 保持可训练；
 - forward 参数列表不包含 `is_visible`；
 - checkpoint 仅允许 V2 新头缺键，不允许 Stage3 backbone unexpected/missing key。
 
@@ -253,7 +254,9 @@ git commit -m "feat: define event v2 transition schema"
 `load_stage3_state_dict(state_dict)` 和与现有 `Transformer.forward()` 前八个参数完全一致的
 `forward()`；返回 `Stage3BackboneOutput`。
 
-`edge_features` 使用 `satellite_projection(satellite_tokens)[:, :, None, :] + task_projection(task_tokens)[:, None, :, :]`，而不是调用 Basilisk/TimeModel 生成未来特征。teacher logits 保持旧 Stage3 计算路径，供 V2-0 蒸馏。
+`edge_features` 使用 `satellite_projection(satellite_tokens)[:, :, None, :] + task_projection(task_tokens)[:, None, :, :]`，而不是调用 Basilisk/TimeModel 生成未来特征。
+两个 projection 属于 V2 新模块，不能随 Stage3 checkpoint 参数冻结。teacher logits
+保持旧 Stage3 计算路径，供 V2-0 蒸馏。
 
 - [ ] **Step 3: 运行测试并提交**
 
