@@ -33,6 +33,7 @@ from .actor import (
     ActorOutput,
     AutoregressiveJointActor,
 )
+from .model import EventActorCriticOutput, EventJointActorCritic
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -59,4 +60,6 @@ __all__ = [
     'ActionEvaluation',
     'ActorOutput',
     'AutoregressiveJointActor',
+    'EventActorCriticOutput',
+    'EventJointActorCritic',
 ]
