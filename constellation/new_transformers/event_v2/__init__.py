@@ -23,6 +23,11 @@ from .transition import (
     transition_schema_fingerprint,
 )
 from .backbone import Stage3BackboneOutput, Stage3FeatureBackbone
+from .critic import (
+    CentralizedValueCritic,
+    EventStateEncoder,
+    EventStateEncoding,
+)
 
 __all__ = [
     'COMMITMENT_SECONDS',
@@ -43,4 +48,7 @@ __all__ = [
     'transition_schema_fingerprint',
     'Stage3BackboneOutput',
     'Stage3FeatureBackbone',
+    'CentralizedValueCritic',
+    'EventStateEncoder',
+    'EventStateEncoding',
 ]
