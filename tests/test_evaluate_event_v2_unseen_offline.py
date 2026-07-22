@@ -1,9 +1,17 @@
 import math
 
 import pytest
+import torch
 
+from constellation.new_transformers.event_v2.model import EventJointActorCritic
+from constellation.new_transformers.event_v2.transition import (
+    transition_schema_fingerprint,
+)
+from constellation.new_transformers.model import Model
 from tools.evaluate_event_v2_unseen_offline import (
     aggregate_weighted_losses,
+    audit_training_checkpoint,
+    build_paired_models,
     decide_acceptance,
 )
 
@@ -14,6 +22,51 @@ LOSS_WEIGHTS = {
     'commitment': 3.0,
     'value': 4.0,
 }
+
+
+def _model_kwargs() -> dict[str, object]:
+    return {
+        'event_width': 8,
+        'sensor_type_embedding_dim': 4,
+        'tasks_data_embedding_dim': 4,
+        'encoder_width': 8,
+        'encoder_depth': 1,
+        'encoder_num_heads': 2,
+        'sensor_enabled_embedding_dim': 4,
+        'constellation_data_embedding_dim': 4,
+        'decoder_width': 8,
+        'decoder_depth': 1,
+        'decoder_num_heads': 2,
+        'use_constraint_module': False,
+        'use_sdpa': False,
+        'freeze_backbone': True,
+    }
+
+
+def _pair_checkpoints(tmp_path, *, fingerprint: str = 'a' * 64):
+    kwargs = _model_kwargs()
+    stage3_kwargs = dict(kwargs)
+    stage3_kwargs.pop('event_width')
+    stage3_kwargs.pop('freeze_backbone')
+    stage3 = Model(**stage3_kwargs)
+    stage3_path = tmp_path / 'stage3.pth'
+    torch.save({'model': stage3.state_dict()}, stage3_path)
+
+    trained = EventJointActorCritic(**kwargs)
+    trained.load_stage3_checkpoint(stage3_path)
+    with torch.no_grad():
+        trained.actor.idle_head.weight.add_(0.25)
+    checkpoint = {
+        'checkpoint_version': 1,
+        'stage': 'V2-0',
+        'steps': 10_000,
+        'transition_schema_fingerprint': transition_schema_fingerprint(),
+        'config_fingerprint': fingerprint,
+        'model': trained.state_dict(),
+    }
+    trained_path = tmp_path / 'trained.pth'
+    torch.save(checkpoint, trained_path)
+    return stage3_path, trained_path, checkpoint
 
 
 def _scene(
@@ -145,3 +198,90 @@ def test_acceptance_rejects_incomplete_or_invalid_evidence(
 
     assert result['accepted'] is False
     assert any(expected_reason in reason for reason in result['reasons'])
+
+
+def test_paired_models_are_reproducible_and_share_exact_backbone(
+    tmp_path,
+) -> None:
+    stage3_path, trained_path, _ = _pair_checkpoints(tmp_path)
+
+    first = build_paired_models(
+        model_kwargs=_model_kwargs(),
+        stage3_checkpoint=stage3_path,
+        trained_checkpoint=trained_path,
+        expected_config_fingerprint='a' * 64,
+        seed=3407,
+        device=torch.device('cpu'),
+    )
+    second = build_paired_models(
+        model_kwargs=_model_kwargs(),
+        stage3_checkpoint=stage3_path,
+        trained_checkpoint=trained_path,
+        expected_config_fingerprint='a' * 64,
+        seed=3407,
+        device=torch.device('cpu'),
+    )
+
+    for name, value in first.random_model.state_dict().items():
+        torch.testing.assert_close(
+            value,
+            second.random_model.state_dict()[name],
+            rtol=0,
+            atol=0,
+        )
+    for name, value in first.random_model.backbone.transformer.state_dict().items():
+        torch.testing.assert_close(
+            value,
+            first.trained_model.backbone.transformer.state_dict()[name],
+            rtol=0,
+            atol=0,
+        )
+    assert not torch.equal(
+        first.random_model.actor.idle_head.weight,
+        first.trained_model.actor.idle_head.weight,
+    )
+    assert first.audit['backbone_exact_match'] is True
+    assert first.audit['strict_model_load'] is True
+
+
+@pytest.mark.parametrize(
+    ('field', 'bad_value', 'message'),
+    [
+        ('checkpoint_version', 2, 'version'),
+        ('stage', 'M3', 'stage'),
+        ('steps', 9_999, 'step'),
+        ('transition_schema_fingerprint', 'bad', 'schema'),
+        ('config_fingerprint', 'b' * 64, 'config'),
+    ],
+)
+def test_checkpoint_audit_rejects_metadata_mismatch(
+    tmp_path,
+    field: str,
+    bad_value: object,
+    message: str,
+) -> None:
+    _, _, checkpoint = _pair_checkpoints(tmp_path)
+    checkpoint[field] = bad_value
+
+    with pytest.raises(ValueError, match=message):
+        audit_training_checkpoint(
+            checkpoint,
+            expected_config_fingerprint='a' * 64,
+            expected_steps=10_000,
+        )
+
+
+def test_paired_model_loader_rejects_non_strict_state_dict(tmp_path) -> None:
+    stage3_path, trained_path, checkpoint = _pair_checkpoints(tmp_path)
+    checkpoint['model'].pop('actor.idle_head.bias')
+    torch.save(checkpoint, trained_path)
+
+    with pytest.raises(RuntimeError, match='Missing key'):
+        build_paired_models(
+            model_kwargs=_model_kwargs(),
+            stage3_checkpoint=stage3_path,
+            trained_checkpoint=trained_path,
+            expected_config_fingerprint='a' * 64,
+            seed=3407,
+            device=torch.device('cpu'),
+        )

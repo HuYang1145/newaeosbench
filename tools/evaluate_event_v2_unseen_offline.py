@@ -5,7 +5,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import math
+from pathlib import Path
+import random
+from typing import NamedTuple
 from typing import Any
+
+import numpy as np
+import torch
+
+from constellation.new_transformers.event_v2.model import (
+    EventJointActorCritic,
+)
+from constellation.new_transformers.event_v2.transition import (
+    transition_schema_fingerprint,
+)
 
 
 LOSS_COMPONENTS = (
@@ -14,6 +27,115 @@ LOSS_COMPONENTS = (
     'commitment',
     'value',
 )
+CHECKPOINT_VERSION = 1
+STAGE = 'V2-0'
+
+
+class PairedModels(NamedTuple):
+    random_model: EventJointActorCritic
+    trained_model: EventJointActorCritic
+    audit: dict[str, Any]
+
+
+def _set_seed(seed: int, device: torch.device) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(seed)
+
+
+def audit_training_checkpoint(
+    checkpoint: Mapping[str, Any],
+    *,
+    expected_config_fingerprint: str,
+    expected_steps: int,
+) -> dict[str, Any]:
+    """在加载权重前验证 V2-0 checkpoint 的不可变元数据。"""
+
+    if checkpoint.get('checkpoint_version') != CHECKPOINT_VERSION:
+        raise ValueError('checkpoint version mismatch')
+    if checkpoint.get('stage') != STAGE:
+        raise ValueError('checkpoint stage mismatch')
+    if checkpoint.get('steps') != expected_steps:
+        raise ValueError('checkpoint step mismatch')
+    schema_fingerprint = transition_schema_fingerprint()
+    if checkpoint.get('transition_schema_fingerprint') != schema_fingerprint:
+        raise ValueError('checkpoint schema fingerprint mismatch')
+    if checkpoint.get('config_fingerprint') != expected_config_fingerprint:
+        raise ValueError('checkpoint config fingerprint mismatch')
+    model_state = checkpoint.get('model')
+    if not isinstance(model_state, Mapping):
+        raise ValueError('checkpoint model state is missing')
+    return {
+        'checkpoint_version': CHECKPOINT_VERSION,
+        'stage': STAGE,
+        'steps': expected_steps,
+        'transition_schema_fingerprint': schema_fingerprint,
+        'config_fingerprint': expected_config_fingerprint,
+    }
+
+
+def build_paired_models(
+    *,
+    model_kwargs: Mapping[str, Any],
+    stage3_checkpoint: str | Path,
+    trained_checkpoint: str | Path,
+    expected_config_fingerprint: str,
+    seed: int,
+    device: torch.device,
+) -> PairedModels:
+    """构造共享 Stage3 backbone 的随机基线和严格加载的训练模型。"""
+
+    stage3_checkpoint = Path(stage3_checkpoint)
+    trained_checkpoint = Path(trained_checkpoint)
+    if not stage3_checkpoint.is_file():
+        raise FileNotFoundError(f'Stage3 checkpoint not found: {stage3_checkpoint}')
+    if not trained_checkpoint.is_file():
+        raise FileNotFoundError(
+            f'V2 trained checkpoint not found: {trained_checkpoint}'
+        )
+    checkpoint = torch.load(
+        trained_checkpoint,
+        map_location='cpu',
+        weights_only=False,
+    )
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError('V2 checkpoint must be a mapping')
+    audit = audit_training_checkpoint(
+        checkpoint,
+        expected_config_fingerprint=expected_config_fingerprint,
+        expected_steps=10_000,
+    )
+
+    _set_seed(seed, device)
+    random_model = EventJointActorCritic(**dict(model_kwargs))
+    random_model.load_stage3_checkpoint(stage3_checkpoint)
+    _set_seed(seed, device)
+    trained_model = EventJointActorCritic(**dict(model_kwargs))
+    trained_model.load_stage3_checkpoint(stage3_checkpoint)
+    trained_model.load_state_dict(checkpoint['model'], strict=True)
+
+    random_backbone = random_model.backbone.transformer.state_dict()
+    trained_backbone = trained_model.backbone.transformer.state_dict()
+    backbone_exact_match = (
+        random_backbone.keys() == trained_backbone.keys()
+        and all(
+            torch.equal(value, trained_backbone[name])
+            for name, value in random_backbone.items()
+        )
+    )
+    if not backbone_exact_match:
+        raise ValueError('random and trained Stage3 backbones do not match')
+
+    random_model.eval().to(device)
+    trained_model.eval().to(device)
+    audit.update({
+        'seed': seed,
+        'strict_model_load': True,
+        'backbone_exact_match': True,
+    })
+    return PairedModels(random_model, trained_model, audit)
 
 
 def aggregate_weighted_losses(
