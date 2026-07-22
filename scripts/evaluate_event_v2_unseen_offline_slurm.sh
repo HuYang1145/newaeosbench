@@ -27,6 +27,7 @@ BATCH_CANDIDATES=(8 16 32 64 128 256 512)
 cd "${ROOT_DIR}"
 export PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}"
 export PYTHONPATH="${ROOT_DIR}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export MPLCONFIGDIR="/tmp/aeos_mpl_${JOB_ID}"
 export XDG_CACHE_HOME="/tmp/aeos_cache_${JOB_ID}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"

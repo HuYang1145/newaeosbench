@@ -20,6 +20,10 @@ def test_unseen_acceptance_slurm_script_has_fixed_scope_and_gpu_probe() -> None:
     assert 'BATCH_CANDIDATES=(8 16 32 64 128 256 512)' in script
     assert 'PROBE_SCENE_INDEX="${PROBE_SCENE_INDEX:-36}"' in script
     assert 'MAX_RESERVED_FRACTION="${MAX_RESERVED_FRACTION:-0.90}"' in script
+    assert (
+        'PYTORCH_CUDA_ALLOC_CONF=' in script
+        and 'expandable_segments:True' in script
+    )
     assert '--limit 1' in script
     assert '--scene-index "${PROBE_SCENE_INDEX}"' in script
     assert '--formal' in script
