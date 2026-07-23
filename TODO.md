@@ -255,6 +255,20 @@ sum(event_reward) = Q_final
 
 ### V2-2：同步 PPO 收益
 
+- [x] 已新增 V2-1 → V2-2 安全 bootstrap：只继承 model/optimizer，不继承旧场景
+  runtime、计数器或 RNG；V2-2 checkpoint 使用独立 stage/config/scene 指纹并保持
+  精确恢复。相关 V2 回归共 `135 passed`。
+- [x] 真实 BF16 bootstrap smoke job `2194` 已 `COMPLETED 0:0`，scene 4 运行
+  120 秒、1 update、15 events；`accepted=true`、reward/log-prob 最大误差均为
+  `0`、冻结参数变化数为 `0`、checkpoint 第一动作可复现。日志：
+  `work_dirs/eval_logs/event_v2_2_smoke_2194.log`；输出：
+  `work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/smoke_2194/`。
+- [ ] 正式全预算同步训练 job `2203` 已提交并开始运行：`local-10`、当前全部 3 张
+  可用 GPU、96 CPU、160 GiB、上限 16 小时。四个 replica 使用独立 seed，
+  分别训练 scenes `4–51`、`52–99`、`100–147`、`148–195`；固定 held-out train
+  scenes 为 `196–203`，训练期间不访问 Val/Test。父日志：
+  `work_dirs/eval_logs/event_v2_2_full_2203.log`；replica 日志位于
+  `work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_{0,1,2,3}/train_2203.log`。
 - [ ] 建议最多 12–16 小时。
 - [ ] checkpoint 只根据固定 held-out train scenes 的 `Q` 和训练稳定性选取。
 - [ ] 运行一个完整 3,600 秒 train scene smoke。

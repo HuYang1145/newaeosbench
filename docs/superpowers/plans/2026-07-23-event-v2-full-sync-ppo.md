@@ -4,9 +4,9 @@
 
 **Goal:** 从已通过 V2-1 正确性验收的 checkpoint 启动四个互相独立的 V2-2 同步 PPO replica，在 12–16 小时预算内覆盖 192 个预注册 train scenes，并保留 8 个固定 held-out train scenes 供 checkpoint 选择。
 
-**Architecture:** V2-2 只继承 V2-1 的模型与 optimizer 状态，不继承旧场景 runtime、计数器或 RNG；每个 replica 使用独立 seed 和 48 个不重叠场景，四个 Slurm step 各占一张 GPU。V2-2 checkpoint 保持完整的阶段、配置、场景和 runtime 精确恢复语义；官方 Val/Test 在训练期间不可访问。
+**Architecture:** V2-2 只继承 V2-1 的模型与 optimizer 状态，不继承旧场景 runtime、计数器或 RNG；每个 replica 使用独立 seed 和 48 个不重叠场景。启动时 GPU 2 已被一个持续到次日的 Slurm 推理服务占用，因此正式作业申请当前全部 3 张可用 GPU，四个训练进程中的两个共享一张实测峰值不足 0.5 GiB 的 4090。V2-2 checkpoint 保持完整的阶段、配置、场景和 runtime 精确恢复语义；官方 Val/Test 在训练期间不可访问。
 
-**Tech Stack:** Python 3.11、PyTorch、Basilisk、pytest、Slurm `local-10`、4×GPU、BF16 AMP；统一使用 `/home/hy/miniconda3/envs/aeos/bin/python`。
+**Tech Stack:** Python 3.11、PyTorch、Basilisk、pytest、Slurm `local-10`、当前全部 3×可用 GPU、BF16 AMP；统一使用 `/home/hy/miniconda3/envs/aeos/bin/python`。
 
 ---
 
@@ -94,7 +94,7 @@ Run:
 
 Expected: PASS。
 
-### Task 3: 四 GPU Slurm 包装与静态防泄漏
+### Task 3: 多 GPU Slurm 包装与静态防泄漏
 
 **Files:**
 - Create: `scripts/smoke_event_v2_2_sync_ppo_slurm.sh`
@@ -103,7 +103,7 @@ Expected: PASS。
 
 - [ ] **Step 1: 写失败测试**
 
-新增脚本测试，要求正式脚本申请 `local-10`、4 张 GPU、16 小时，使用四个互斥 train 分片和四个不同 seed，调用 V2-1 checkpoint 的 bootstrap 参数，且脚本文本不含任何 Val/Test split。
+新增脚本测试，要求正式脚本申请 `local-10` 当前全部 3 张可用 GPU、16 小时，使用四个互斥 train 分片和四个不同 seed，调用 V2-1 checkpoint 的 bootstrap 参数，且脚本文本不含任何 Val/Test split。
 
 - [ ] **Step 2: 验证 RED**
 
@@ -118,7 +118,7 @@ Expected: FAIL，原因是两个包装脚本尚不存在。
 
 - [ ] **Step 3: 最小实现**
 
-smoke 脚本申请 1 张 GPU，在 train scene 4 上运行 60 秒/1 update。正式脚本申请 4 张 GPU、96 CPU、160 GiB 内存，用四个互斥 `srun --exclusive --gres=gpu:1` step 启动 replica；每个 replica 写独立日志与输出目录，父脚本等待全部 step 并在任一失败时非零退出。
+smoke 脚本申请 1 张 GPU，在 train scene 4 上运行 120 秒/1 update。正式脚本申请当前全部 3 张可用 GPU、96 CPU、160 GiB 内存，运行四个互斥 replica；脚本排除显存占用超过 4 GiB 的物理卡，第四个 replica 与第一个共享一张低占用 4090。每个 replica 写独立日志与输出目录，父脚本等待全部进程并在任一失败时非零退出。
 
 - [ ] **Step 4: 验证 GREEN**
 

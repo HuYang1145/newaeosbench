@@ -164,7 +164,7 @@ def test_v2_2_full_wrapper_uses_four_gpu_disjoint_preregistered_shards() -> None
     script = FULL_SCRIPT.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --gres=gpu:3' in script
     assert '#SBATCH --cpus-per-task=96' in script
     assert '#SBATCH --mem=160G' in script
     assert '#SBATCH --time=16:00:00' in script
@@ -176,8 +176,10 @@ def test_v2_2_full_wrapper_uses_four_gpu_disjoint_preregistered_shards() -> None
     assert 'seq 148 195' in script
     for seed in ('4407', '4408', '4409', '4410'):
         assert seed in script
-    assert 'srun --exclusive' in script
-    assert '--gres=gpu:1' in script
+    assert 'nvidia-smi --query-gpu=index,memory.used' in script
+    assert 'if (( ${#free_gpu_indices[@]} < 3 )); then' in script
+    assert 'GPU_ASSIGNMENTS=(' in script
+    assert 'CUDA_VISIBLE_DEVICES="${gpu_index}"' in script
     assert '--bootstrap-checkpoint "${BOOTSTRAP}"' in script
     assert '--max-time-step 3600' in script
     assert '--max-updates 1400' in script

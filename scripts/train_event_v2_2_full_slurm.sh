@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_2_full
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:3
 #SBATCH --cpus-per-task=96
 #SBATCH --mem=160G
 #SBATCH --time=16:00:00
@@ -36,18 +36,46 @@ if [[ ! -f "${BOOTSTRAP}" ]]; then
   exit 1
 fi
 
+free_gpu_indices=()
+while IFS=',' read -r gpu_index memory_used; do
+  gpu_index="${gpu_index// /}"
+  memory_used="${memory_used// /}"
+  if (( memory_used < 4096 )); then
+    free_gpu_indices+=("${gpu_index}")
+  fi
+done < <(
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits
+)
+if (( ${#free_gpu_indices[@]} < 3 )); then
+  echo "[error] V2-2 needs at least three physically free GPUs" >&2
+  exit 1
+fi
+if (( ${#free_gpu_indices[@]} >= 4 )); then
+  GPU_ASSIGNMENTS=(
+    "${free_gpu_indices[0]}"
+    "${free_gpu_indices[1]}"
+    "${free_gpu_indices[2]}"
+    "${free_gpu_indices[3]}"
+  )
+else
+  GPU_ASSIGNMENTS=(
+    "${free_gpu_indices[0]}"
+    "${free_gpu_indices[1]}"
+    "${free_gpu_indices[2]}"
+    "${free_gpu_indices[0]}"
+  )
+fi
+echo "[info] replica GPU assignments: ${GPU_ASSIGNMENTS[*]}"
+
 mkdir -p "${OUTPUT}"
 pids=()
 for replica in 0 1 2 3; do
   replica_output="${OUTPUT}/replica_${replica}"
   replica_log="${replica_output}/train_${SLURM_JOB_ID:-manual}.log"
+  gpu_index="${GPU_ASSIGNMENTS[$replica]}"
   mkdir -p "${replica_output}"
   read -r -a scene_ids <<< "${SHARDS[$replica]}"
-  srun --exclusive \
-    --nodes=1 \
-    --ntasks=1 \
-    --gres=gpu:1 \
-    --cpus-per-task=24 \
+  CUDA_VISIBLE_DEVICES="${gpu_index}" \
     "${PYTHON}" tools/train_event_v2_sync_ppo.py \
       --config "${CONFIG}" \
       --bootstrap-checkpoint "${BOOTSTRAP}" \
