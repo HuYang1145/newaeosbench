@@ -206,13 +206,52 @@ sum(event_reward) = Q_final
 
 ### V2-1：同步 PPO 正确性
 
-- [ ] 最长约 4 小时，使用少量 train scene 和并行环境。
-- [ ] 验证 reward 精确重建。
-- [ ] 验证联合 log-prob、mask、顺序和 owner 状态重放一致。
-- [ ] 验证 Stage3 冻结参数逐值不变。
-- [ ] 验证数值有限、事件时间严格推进、承诺必然终止。
-- [ ] 验证 checkpoint、RNG 和第一批恢复动作可复现。
-- [ ] 本阶段不要求完成率提高。
+- [x] 首次正式 Slurm smoke job `1018` 已完成两级 preflight，但 4 场正式训练在首个
+  update 被正确拒绝：BF16 行为采样使用 `batch=1`，learner 曾把同 shape 事件合并为
+  batch，联合 log-prob 最大误差 `0.15719557`。未放宽 `1e-6` 门槛；已改为行为采样、
+  校验和 learner 全部逐事件 `batch=1`，并增加回归测试。
+- [x] 修复后的正式 Slurm smoke 首次提交为 job `1027`，因 `server-10` 的 4 张 GPU
+  均被 job `1016_4`–`1016_7` 占用而保持排队，未开始执行；现按实测内存峰值把申请量
+  安全下调到 96 GiB，并重提为 job `1029`。job `1029` 的合成和 60 秒真实 BF16
+  GPU preflight 均通过，其中真实 preflight 为 12 个事件、52 物理秒，
+  `logprob_replay_max_error=0`、`reward_reconstruction_max_error=0`、冻结参数变化数
+  为 0、checkpoint 第一动作可复现；正式首个 update 在后续 PPO epoch 触碰 KL
+  `0.03` 上限时被旧逻辑整体回滚。
+- [x] 已将 KL 门槛修正为严格 early-stop：后续 epoch 触碰上限时只回滚该 epoch，
+  保留此前满足上限的 epoch；若第一个 epoch 即超限仍拒绝整个 update，最终全 rollout
+  KL 仍必须不超过 `0.03`，没有放宽阈值。job `2016` 进一步证明 64 事件首轮内部会
+  出现高方差局部 minibatch KL；现已改为立即停止后续 minibatch，并以完整 rollout
+  KL 决定保留或回滚当前部分 epoch，仍不允许完整 KL 超限。修复后的正式作业为
+  job `2023`。job `2023` 进一步确认局部停止后的完整 rollout KL 也超限，因此回滚
+  正确；根因是 64 事件 rollout 配 `minibatch_events=4` 会在首轮执行 16 次优化。
+  job `2028` 测试时先保持学习率 `3e-5` 和 KL `0.03` 不变，将 minibatch 提高到
+  16、每轮降为 4 次优化，同时提高 GPU 利用率；实测完整 KL 为 `0.038289208`，
+  4 个 minibatch 全部执行，说明 batch
+  调整有效但 `3e-5` 仍略激进；依据实测将学习率保守校准为 `2e-5`，KL 上限和其他
+  PPO 定义不变。
+  配置为 `server-10/local-10`，1 GPU、24 CPU、96 GiB、上限 `04:00:00`；依次运行
+  合成 CPU preflight、scene 0 的 60 秒 BF16 GPU
+  preflight、4 个 train scene 的 3,600 秒同步 PPO。日志：
+  学习率校准后的重试为 job `2029`，日志：
+  `work_dirs/eval_logs/event_v2_sync_ppo_2029.log`；输出：
+  `work_dirs/event_joint_transformer_v2/v2_1_sync_ppo/`。
+- [x] job `2029` 在 35 分 24 秒内稳定完成预设的 64 updates、4,096 events，
+  `logprob_replay_max_error=0`、冻结参数变化数为 0、数值全部有限、checkpoint 第一
+  动作可复现；但四场仅推进到 `2309/2232/2194/3280` 秒，未达到 3,600 秒，因此
+  `accepted=false` 和 Slurm exit `2:0` 是完整性门槛，不是训练崩溃。已增加
+  cosine scheduler 到达第 64 步后固定在 `eta_min` 的回归测试，准备从
+  `checkpoint_update_000064.pth` 续跑至最多 104 updates。续跑已提交为 job
+  `2190`，日志：`work_dirs/eval_logs/event_v2_sync_ppo_resume_2190.log`。
+- [x] job `2190` 已 `COMPLETED 0:0`，用时 `00:26:07`；最终在 update `101`
+  完成四个 3,600 秒 train scene，共 `6,423` events、`14,333` 计入 reward 的物理秒。
+  最终 checkpoint：`checkpoint_update_000101.pth`。
+- [x] 总运行时间小于 4 小时，只使用 4 个 train scene 和 1 张 GPU。
+- [x] reward 精确重建，最大误差 `1.4551915228366852e-11`。
+- [x] 联合 log-prob、mask、顺序和 owner 状态重放一致，最大误差 `0`。
+- [x] Stage3 冻结参数变化数为 `0`。
+- [x] 数值全部有限，事件时间违规、无效动作和未终止承诺计数均为 `0`。
+- [x] checkpoint、RNG 和第一批恢复动作可复现。
+- [x] 本阶段只通过同步 PPO 正确性门槛，不宣称完成率提高；下一步进入 V2-2。
 
 ### V2-2：同步 PPO 收益
 
@@ -309,6 +348,7 @@ V2-0 单步 preflight checkpoint 已验证上述字段，实际大小约 `367 Mi
     离线 warm start 收敛，不代表 CR/PCR/WCR 已提高。
   - 日志：`work_dirs/eval_logs/event_v2_warm_start_915.log`。
   - checkpoint 目录：`work_dirs/event_joint_transformer_v2/v2_0_warm_start/`。
-- [ ] 对 10k checkpoint 完成固定 `val_unseen` 轨迹离线验收。
-- [ ] 另写同步 PPO/Event Runtime 实施计划；合成环境与完整 3,600 秒真实 smoke 通过
-  后，才进入 Val 8+8。
+- [x] 对 10k checkpoint 完成固定 `val_unseen` 轨迹离线验收。
+- [x] 已写同步 PPO/Event Runtime 实施计划，并通过 CPU 合成闭环与 scene 0 的 10 秒
+  真实 smoke；job `1018` 在正式 BF16 首个 update 暴露并阻断了批量形状导致的
+  log-prob 重放误差，修复重试通过后才进入 V2-2，不直接进入 Val 8+8。

@@ -81,6 +81,24 @@ def test_event_joint_actor_critic_act_and_replay() -> None:
     torch.testing.assert_close(replay_value, output.value)
 
 
+def test_model_act_hard_masks_sensor_incompatible_tasks() -> None:
+    model = EventJointActorCritic(**_model_kwargs()).eval()
+    inputs = list(_inputs())
+    inputs[1] = torch.tensor([[0, 1]])
+    inputs[5] = torch.tensor([[0, 1, 0]])
+
+    output = model.act(*inputs, event_state=_state(), deterministic=False)
+
+    for position, satellite_id in enumerate(
+        output.actor.trace.action_order[0].tolist()
+    ):
+        if satellite_id < 0:
+            continue
+        task_mask = output.actor.trace.task_masks[0, position, 1:]
+        expected = inputs[5][0] == inputs[1][0, satellite_id]
+        assert torch.equal(task_mask, expected)
+
+
 def test_optimizer_step_keeps_frozen_stage3_parameters_unchanged() -> None:
     model = EventJointActorCritic(**_model_kwargs(), freeze_backbone=True)
     before = {

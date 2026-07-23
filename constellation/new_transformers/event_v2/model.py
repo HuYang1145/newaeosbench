@@ -124,6 +124,10 @@ class EventJointActorCritic(nn.Module):
                 constellation_mask,
                 tasks_mask,
                 deterministic=deterministic,
+                task_compatibility=(
+                    constellation_sensor_type.unsqueeze(-1)
+                    == tasks_sensor_type.unsqueeze(1)
+                ),
             ),
             value=self.critic(encoding, constellation_mask, tasks_mask),
         )

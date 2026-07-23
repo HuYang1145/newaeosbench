@@ -186,6 +186,7 @@ class AutoregressiveJointActor(nn.Module):
         task_mask: torch.Tensor,
         *,
         deterministic: bool,
+        task_compatibility: torch.Tensor | None = None,
     ) -> ActorOutput:
         batch_size, num_satellites, num_tasks = self._validate_inputs(
             encoding,
@@ -194,6 +195,20 @@ class AutoregressiveJointActor(nn.Module):
             task_mask,
         )
         termination_distribution = self._termination_distribution(encoding)
+        if task_compatibility is None:
+            task_compatibility = torch.ones(
+                batch_size,
+                num_satellites,
+                num_tasks,
+                dtype=torch.bool,
+                device=task_mask.device,
+            )
+        elif (
+            task_compatibility.shape
+            != (batch_size, num_satellites, num_tasks)
+            or task_compatibility.dtype != torch.bool
+        ):
+            raise ValueError('task compatibility has invalid actor shape')
         termination_mask = (
             satellite_mask
             & state.can_terminate_mask
@@ -286,6 +301,7 @@ class AutoregressiveJointActor(nn.Module):
                 )
                 legal_tasks = (
                     task_mask[batch_index]
+                    & task_compatibility[batch_index, satellite_id]
                     & (current_owner_count < MAX_TASK_OWNERS)
                 )
                 if deterministic:

@@ -4,9 +4,7 @@
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass
-import hashlib
 import json
-import os
 import pathlib
 import random
 import runpy
@@ -23,6 +21,12 @@ if str(ROOT) not in sys.path:
 
 from constellation.new_transformers.event_v2.dataset import (
     EventV2OfflineDataset,
+)
+from constellation.new_transformers.event_v2.checkpoint import (
+    capture_rng_state,
+    config_fingerprint,
+    restore_rng_state,
+    save_checkpoint_atomic,
 )
 from constellation.new_transformers.event_v2.model import (
     EventJointActorCritic,
@@ -45,50 +49,6 @@ class TrainingCounters:
     processed_physical_seconds: int = 0
     episodes: int = 0
     events: int = 0
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _jsonable(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, pathlib.Path):
-        return str(value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    raise TypeError(f'config value is not fingerprintable: {type(value)!r}')
-
-
-def config_fingerprint(config: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        _jsonable(config),
-        sort_keys=True,
-        separators=(',', ':'),
-        ensure_ascii=True,
-    ).encode('ascii')
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def capture_rng_state() -> dict[str, Any]:
-    return {
-        'python': random.getstate(),
-        'numpy': np.random.get_state(),
-        'torch': torch.get_rng_state(),
-        'cuda': (
-            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
-        ),
-    }
-
-
-def restore_rng_state(state: Mapping[str, Any]) -> None:
-    random.setstate(state['python'])
-    np.random.set_state(state['numpy'])
-    torch.set_rng_state(state['torch'])
-    if torch.cuda.is_available() and state['cuda']:
-        torch.cuda.set_rng_state_all(state['cuda'])
 
 
 def build_training_checkpoint(
@@ -121,17 +81,6 @@ def build_training_checkpoint(
             'backbone_is_frozen': model.backbone_is_frozen,
         },
     }
-
-
-def save_checkpoint_atomic(
-    path: str | pathlib.Path,
-    checkpoint: Mapping[str, Any],
-) -> None:
-    path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    torch.save(dict(checkpoint), temporary)
-    os.replace(temporary, path)
 
 
 def load_training_checkpoint(
