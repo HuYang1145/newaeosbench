@@ -151,7 +151,7 @@ def test_v2_2_smoke_bootstraps_one_real_train_scene() -> None:
     assert 'checkpoint_update_000101.pth' in script
     assert '--bootstrap-checkpoint "${BOOTSTRAP}"' in script
     assert '--scene-ids 4' in script
-    assert '--max-time-step 60' in script
+    assert '--max-time-step 120' in script
     assert '--max-updates 1' in script
     assert '--device cuda' in script
     assert 'val_seen' not in script.lower()

@@ -37,7 +37,7 @@ exec "${PYTHON}" tools/train_event_v2_sync_ppo.py \
   --device cuda \
   --seed 4407 \
   --scene-ids 4 \
-  --max-time-step 60 \
+  --max-time-step 120 \
   --max-updates 1 \
   --ppo-epochs 1 \
   --output "${OUTPUT}"
