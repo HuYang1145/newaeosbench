@@ -1,5 +1,6 @@
 import pytest
 import torch
+import threading
 
 from constellation.new_transformers.event_v2.appo import (
     APPOConfig,
@@ -494,18 +495,23 @@ def test_actor_loop_sends_chunks_then_terminal_runtime_state() -> None:
     queue = context.Queue()
     stop = context.Event()
 
-    run_appo_actor_loop(
-        model=model,
-        slots=slots,
-        actor_id=0,
-        scene_ids=(205,),
-        policy_store=store,
-        result_queue=queue,
-        stop_event=stop,
-        target_events=1,
-        device=torch.device('cpu'),
-        replay_atol=1e-6,
+    worker = threading.Thread(
+        target=run_appo_actor_loop,
+        kwargs={
+            'model': model,
+            'slots': slots,
+            'actor_id': 0,
+            'scene_ids': (205,),
+            'policy_store': store,
+            'result_queue': queue,
+            'stop_event': stop,
+            'target_events': 1,
+            'device': torch.device('cpu'),
+            'replay_atol': 1e-6,
+            'wait_for_stop_after_done': True,
+        },
     )
+    worker.start()
 
     first = queue.get(timeout=2)
     second = queue.get(timeout=2)
@@ -515,3 +521,7 @@ def test_actor_loop_sends_chunks_then_terminal_runtime_state() -> None:
     assert isinstance(done, APPODone)
     assert done.completed_episodes == 1
     assert done.runtime_states[0]['runtime']['events'] == 2
+    assert worker.is_alive()
+    stop.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()

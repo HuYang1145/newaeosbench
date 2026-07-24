@@ -351,6 +351,7 @@ def run_appo_actor_loop(
     amp_dtype: torch.dtype = torch.bfloat16,
     checkpoint_request: Any | None = None,
     checkpoint_release: Any | None = None,
+    wait_for_stop_after_done: bool = True,
 ) -> None:
     """在 chunk 边界刷新策略，并把完整 actor 结果写入队列。"""
 
@@ -421,6 +422,8 @@ def run_appo_actor_loop(
         completed_episodes=len(slots),
         reward_reconstruction_errors=errors,
     ))
+    while wait_for_stop_after_done and not stop_event.is_set():
+        stop_event.wait(0.1)
 
 
 class AsynchronousPPOLearner:
