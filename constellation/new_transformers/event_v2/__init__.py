@@ -57,6 +57,13 @@ from .ppo import (
     compute_rollout_targets,
     event_action_component_counts,
 )
+from .appo import (
+    APPOConfig,
+    APPOUpdateMetrics,
+    AsynchronousPPOLearner,
+    PolicyLagFilterResult,
+    filter_policy_lag,
+)
 from .checkpoint import (
     SYNC_PPO_CHECKPOINT_VERSION,
     SyncPPOCounters,
@@ -132,6 +139,11 @@ __all__ = [
     'clipped_ppo_objective',
     'compute_rollout_targets',
     'event_action_component_counts',
+    'APPOConfig',
+    'APPOUpdateMetrics',
+    'AsynchronousPPOLearner',
+    'PolicyLagFilterResult',
+    'filter_policy_lag',
     'SYNC_PPO_CHECKPOINT_VERSION',
     'SyncPPOCounters',
     'SyncPPORestore',

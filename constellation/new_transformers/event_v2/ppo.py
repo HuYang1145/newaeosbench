@@ -192,10 +192,12 @@ class SynchronousPPOTrainer:
         amp_enabled: bool = False,
         amp_dtype: torch.dtype = torch.bfloat16,
         scaler: torch.amp.GradScaler | None = None,
+        require_fully_frozen_backbone: bool = True,
+        verify_behavior_replay: bool = True,
     ) -> None:
-        if not model.backbone_is_frozen:
+        if require_fully_frozen_backbone and not model.backbone_is_frozen:
             raise ValueError('V2-1 requires a fully frozen Stage3 backbone')
-        if any(
+        if require_fully_frozen_backbone and any(
             parameter.requires_grad
             for parameter in model.backbone.transformer.parameters()
         ):
@@ -206,14 +208,18 @@ class SynchronousPPOTrainer:
         self.device = device
         self.amp_enabled = amp_enabled
         self.amp_dtype = amp_dtype
+        self.verify_behavior_replay = verify_behavior_replay
         self.scaler = scaler or torch.amp.GradScaler(
             device.type,
             enabled=False,
         )
         self.policy_version = 0
         self._frozen_reference = {
-            name: value.detach().cpu().clone()
-            for name, value in model.backbone.transformer.state_dict().items()
+            name: parameter.detach().cpu().clone()
+            for name, parameter in (
+                model.backbone.transformer.named_parameters()
+            )
+            if not parameter.requires_grad
         }
 
     def _trainable_snapshot(self) -> dict[str, torch.Tensor]:
@@ -234,8 +240,11 @@ class SynchronousPPOTrainer:
 
     def _frozen_parameter_changes(self) -> int:
         changes = 0
-        for name, value in self.model.backbone.transformer.state_dict().items():
-            if not torch.equal(value.detach().cpu(), self._frozen_reference[name]):
+        current = dict(
+            self.model.backbone.transformer.named_parameters(),
+        )
+        for name, reference in self._frozen_reference.items():
+            if not torch.equal(current[name].detach().cpu(), reference):
                 changes += 1
         return changes
 
@@ -250,18 +259,19 @@ class SynchronousPPOTrainer:
         behavior = torch.stack([
             step.behavior_log_prob for step in steps
         ]).to(torch.float32)
-        replay = replay_rollout_log_probs(
-            self.model,
-            steps,
-            device=self.device,
-            amp_enabled=self.amp_enabled,
-            amp_dtype=self.amp_dtype,
-        )
-        replay_error = (replay - behavior).abs().max().item()
-        if replay_error > self.config.replay_atol:
-            self._reject(
-                f'behavior log-prob replay mismatch: {replay_error:.8g}'
+        if self.verify_behavior_replay:
+            replay = replay_rollout_log_probs(
+                self.model,
+                steps,
+                device=self.device,
+                amp_enabled=self.amp_enabled,
+                amp_dtype=self.amp_dtype,
             )
+            replay_error = (replay - behavior).abs().max().item()
+            if replay_error > self.config.replay_atol:
+                self._reject(
+                    f'behavior log-prob replay mismatch: {replay_error:.8g}'
+                )
 
         targets = compute_rollout_targets(
             steps,
