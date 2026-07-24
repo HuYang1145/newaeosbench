@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import time
 from typing import Any, NamedTuple
 
 import torch
@@ -14,7 +15,12 @@ from .ppo import (
     PPOUpdateMetrics,
     SynchronousPPOTrainer,
 )
-from .rollout import StoredEventStep
+from .rollout import (
+    StoredEventStep,
+    SynchronousRuntimeSlot,
+    collect_synchronous_rollout,
+    replay_rollout_log_probs,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,107 @@ class APPOUpdateMetrics:
     stale_dropped_events: int
     minimum_behavior_version: int
     maximum_behavior_version: int
+
+
+@dataclass(frozen=True)
+class APPORolloutChunk:
+    actor_id: int
+    policy_version: int
+    scene_ids: tuple[int, ...]
+    steps: tuple[StoredEventStep, ...]
+    replay_max_error: float
+    physical_seconds: int
+    completed_episodes: int
+
+    def __post_init__(self) -> None:
+        if self.actor_id < 0 or self.policy_version < 0:
+            raise ValueError('APPO actor identifiers must be non-negative')
+        if (
+            not self.scene_ids
+            or len(self.scene_ids) != len(set(self.scene_ids))
+            or any(scene_id < 0 for scene_id in self.scene_ids)
+        ):
+            raise ValueError('APPO actor scene IDs are invalid')
+        if (
+            not self.steps
+            or any(
+                step.policy_version != self.policy_version
+                for step in self.steps
+            )
+        ):
+            raise ValueError(
+                'APPO chunk needs one non-empty behavior policy version',
+            )
+        if (
+            self.replay_max_error < 0
+            or self.physical_seconds <= 0
+            or not 0 <= self.completed_episodes <= len(self.scene_ids)
+        ):
+            raise ValueError('APPO actor chunk metrics are invalid')
+
+
+@dataclass(frozen=True)
+class APPOSnapshot:
+    actor_id: int
+    generation: int
+    scene_ids: tuple[int, ...]
+    runtime_states: tuple[Mapping[str, Any], ...]
+    completed_episodes: int
+
+    def __post_init__(self) -> None:
+        if self.actor_id < 0 or self.generation <= 0:
+            raise ValueError('APPO snapshot identifiers are invalid')
+        if (
+            not self.scene_ids
+            or len(self.scene_ids) != len(self.runtime_states)
+            or not all(
+                isinstance(state, Mapping)
+                for state in self.runtime_states
+            )
+            or not 0 <= self.completed_episodes <= len(self.scene_ids)
+        ):
+            raise ValueError('APPO snapshot runtime states are invalid')
+
+
+@dataclass(frozen=True)
+class APPODone:
+    actor_id: int
+    scene_ids: tuple[int, ...]
+    runtime_states: tuple[Mapping[str, Any], ...]
+    completed_episodes: int
+    reward_reconstruction_errors: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if self.actor_id < 0:
+            raise ValueError('APPO done actor ID is invalid')
+        if (
+            not self.scene_ids
+            or len(self.scene_ids) != len(self.runtime_states)
+            or self.completed_episodes != len(self.scene_ids)
+            or len(self.reward_reconstruction_errors) != len(self.scene_ids)
+            or any(
+                not torch.isfinite(torch.tensor(error)) or error < 0
+                for error in self.reward_reconstruction_errors
+            )
+        ):
+            raise ValueError('APPO done message is incomplete')
+
+
+@dataclass(frozen=True)
+class APPOWorkerError:
+    actor_id: int
+    error_type: str
+    message: str
+    traceback: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.actor_id < 0
+            or not self.error_type
+            or not self.message
+            or not self.traceback
+        ):
+            raise ValueError('APPO worker error context is incomplete')
 
 
 class SharedPolicyRefresh(NamedTuple):
@@ -147,6 +254,171 @@ def filter_policy_lag(
         minimum_version=min(versions),
         maximum_version=max(versions),
     )
+
+
+def collect_appo_actor_chunk(
+    model: EventJointActorCritic,
+    slots: Sequence[SynchronousRuntimeSlot],
+    *,
+    actor_id: int,
+    scene_ids: Sequence[int],
+    target_events: int,
+    policy_version: int,
+    device: torch.device,
+    replay_atol: float,
+    amp_enabled: bool = False,
+    amp_dtype: torch.dtype = torch.bfloat16,
+) -> APPORolloutChunk:
+    """采集一个版本固定的 actor chunk，并在发送前重放行为概率。"""
+
+    scene_ids = tuple(int(scene_id) for scene_id in scene_ids)
+    if len(slots) != len(scene_ids):
+        raise ValueError('APPO actor slots must match scene IDs')
+    if replay_atol < 0:
+        raise ValueError('APPO actor replay tolerance must be non-negative')
+    active_slots = [slot for slot in slots if not slot.finished]
+    steps = collect_synchronous_rollout(
+        model,
+        active_slots,
+        target_events=target_events,
+        policy_version=policy_version,
+        device=device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+    )
+    replay = replay_rollout_log_probs(
+        model,
+        steps,
+        device=device,
+        amp_enabled=amp_enabled,
+        amp_dtype=amp_dtype,
+    )
+    behavior = torch.stack([
+        step.behavior_log_prob for step in steps
+    ])
+    replay_max_error = float((replay - behavior).abs().max())
+    if replay_max_error > replay_atol:
+        raise RuntimeError(
+            'APPO actor behavior log-prob replay mismatch: '
+            f'{replay_max_error:.8g}',
+        )
+    return APPORolloutChunk(
+        actor_id=actor_id,
+        policy_version=policy_version,
+        scene_ids=scene_ids,
+        steps=tuple(steps),
+        replay_max_error=replay_max_error,
+        physical_seconds=int(
+            sum(step.delta_t.item() for step in steps)
+        ),
+        completed_episodes=sum(int(slot.finished) for slot in slots),
+    )
+
+
+def _serialize_actor_slots(
+    slots: Sequence[SynchronousRuntimeSlot],
+) -> tuple[Mapping[str, Any], ...]:
+    states = []
+    for slot in slots:
+        state_dict = getattr(slot.runtime, 'state_dict', None)
+        if not callable(state_dict):
+            raise TypeError('APPO actor runtime must support state_dict()')
+        states.append({
+            'environment_index': slot.environment_index,
+            'episode_id': slot.episode_id,
+            'event_index': slot.event_index,
+            'finished': slot.finished,
+            'runtime': state_dict(),
+        })
+    return tuple(states)
+
+
+def run_appo_actor_loop(
+    *,
+    model: EventJointActorCritic,
+    slots: Sequence[SynchronousRuntimeSlot],
+    actor_id: int,
+    scene_ids: Sequence[int],
+    policy_store: SharedPolicyStore,
+    result_queue: Any,
+    stop_event: Any,
+    target_events: int,
+    device: torch.device,
+    replay_atol: float,
+    amp_enabled: bool = False,
+    amp_dtype: torch.dtype = torch.bfloat16,
+    checkpoint_request: Any | None = None,
+    checkpoint_release: Any | None = None,
+) -> None:
+    """在 chunk 边界刷新策略，并把完整 actor 结果写入队列。"""
+
+    scene_ids = tuple(int(scene_id) for scene_id in scene_ids)
+    if len(slots) != len(scene_ids):
+        raise ValueError('APPO actor slots must match scene IDs')
+    model.to(device)
+    model.eval()
+    policy_version = policy_store.refresh(
+        model,
+        last_version=-1,
+    ).version
+    last_snapshot_generation = 0
+    while not stop_event.is_set() and any(
+        not slot.finished for slot in slots
+    ):
+        refresh = policy_store.refresh(
+            model,
+            last_version=policy_version,
+        )
+        policy_version = refresh.version
+        chunk = collect_appo_actor_chunk(
+            model,
+            slots,
+            actor_id=actor_id,
+            scene_ids=scene_ids,
+            target_events=target_events,
+            policy_version=policy_version,
+            device=device,
+            replay_atol=replay_atol,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
+        result_queue.put(chunk)
+        if checkpoint_request is not None:
+            generation = int(checkpoint_request.value)
+            if generation > last_snapshot_generation:
+                result_queue.put(APPOSnapshot(
+                    actor_id=actor_id,
+                    generation=generation,
+                    scene_ids=scene_ids,
+                    runtime_states=_serialize_actor_slots(slots),
+                    completed_episodes=sum(
+                        int(slot.finished) for slot in slots
+                    ),
+                ))
+                last_snapshot_generation = generation
+                if checkpoint_release is None:
+                    raise ValueError(
+                        'APPO checkpoint release signal is missing',
+                    )
+                while (
+                    int(checkpoint_release.value) < generation
+                    and not stop_event.is_set()
+                ):
+                    time.sleep(0.05)
+
+    if stop_event.is_set():
+        return
+    errors = tuple(
+        float(getattr(slot.runtime, 'reward_reconstruction_error'))
+        for slot in slots
+    )
+    result_queue.put(APPODone(
+        actor_id=actor_id,
+        scene_ids=scene_ids,
+        runtime_states=_serialize_actor_slots(slots),
+        completed_episodes=len(slots),
+        reward_reconstruction_errors=errors,
+    ))
 
 
 class AsynchronousPPOLearner:

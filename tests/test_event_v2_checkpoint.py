@@ -449,6 +449,7 @@ def test_appo_checkpoint_restores_training_and_actor_runtime_state(
     assert restored.counters.stale_dropped_events == 32
     assert restored.actor_scene_shards == scene_shards
     assert restored.actor_runtime_states == runtime_states
+    assert restored.pending_steps == ()
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, expected[name])
 

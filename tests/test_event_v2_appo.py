@@ -3,9 +3,15 @@ import torch
 
 from constellation.new_transformers.event_v2.appo import (
     APPOConfig,
+    APPODone,
+    APPORolloutChunk,
+    APPOSnapshot,
+    APPOWorkerError,
     AsynchronousPPOLearner,
     SharedPolicyStore,
+    collect_appo_actor_chunk,
     filter_policy_lag,
+    run_appo_actor_loop,
 )
 from constellation.new_transformers.event_v2.model import (
     EventJointActorCritic,
@@ -14,6 +20,12 @@ from constellation.new_transformers.event_v2.observation import (
     EventPolicyObservation,
 )
 from constellation.new_transformers.event_v2.rollout import StoredEventStep
+from constellation.new_transformers.event_v2.rollout import (
+    SynchronousRuntimeSlot,
+)
+from constellation.new_transformers.event_v2.basilisk_runtime import (
+    RuntimeStep,
+)
 from constellation.new_transformers.event_v2.state import EventStateTensors
 from constellation.new_transformers.event_v2.ppo import PPOConfig
 
@@ -338,3 +350,149 @@ def test_shared_policy_store_publishes_complete_monotonic_versions() -> None:
     torch.testing.assert_close(next(target_model.parameters()), unchanged)
     with pytest.raises(ValueError, match='monotonically'):
         store.publish(source_model, version=3)
+
+
+class _ScriptedRuntime:
+    def __init__(self, num_events: int = 2) -> None:
+        self.num_events = num_events
+        self.events = 0
+
+    def reset(self) -> EventPolicyObservation:
+        return _observation()
+
+    def step(self, action) -> RuntimeStep:
+        del action
+        self.events += 1
+        done = self.events >= self.num_events
+        return RuntimeStep(
+            observation=(
+                None if done else _observation(self.events * 5)
+            ),
+            reward=self.events / 100,
+            delta_t=5,
+            done=done,
+            final_quality=(0.03 if done else None),
+            invalid_action_count=0,
+        )
+
+    @property
+    def reward_reconstruction_error(self) -> float:
+        if self.events < self.num_events:
+            raise RuntimeError('not finished')
+        return 0.
+
+    def state_dict(self) -> dict:
+        return {
+            'events': self.events,
+            'num_events': self.num_events,
+        }
+
+
+def test_actor_chunk_uses_one_behavior_version_and_replays_before_send(
+) -> None:
+    torch.manual_seed(71)
+    model = _model()
+    runtimes = [_ScriptedRuntime(), _ScriptedRuntime()]
+    slots = [
+        SynchronousRuntimeSlot(
+            environment_index=index,
+            episode_id=0,
+            observation=runtime.reset(),
+            runtime=runtime,
+        )
+        for index, runtime in enumerate(runtimes)
+    ]
+
+    chunk = collect_appo_actor_chunk(
+        model,
+        slots,
+        actor_id=2,
+        scene_ids=(205, 206),
+        target_events=4,
+        policy_version=3,
+        device=torch.device('cpu'),
+        replay_atol=1e-6,
+    )
+
+    assert isinstance(chunk, APPORolloutChunk)
+    assert chunk.actor_id == 2
+    assert chunk.policy_version == 3
+    assert chunk.scene_ids == (205, 206)
+    assert len(chunk.steps) == 4
+    assert {step.policy_version for step in chunk.steps} == {3}
+    assert chunk.replay_max_error <= 1e-6
+    assert chunk.physical_seconds == 20
+    assert chunk.completed_episodes == 2
+    assert all(slot.finished for slot in slots)
+
+
+def test_actor_control_messages_preserve_checkpoint_and_error_context() -> None:
+    states = ({'scene_id': 205, 'cursor': 7},)
+    snapshot = APPOSnapshot(
+        actor_id=1,
+        generation=3,
+        scene_ids=(205,),
+        runtime_states=states,
+        completed_episodes=0,
+    )
+    done = APPODone(
+        actor_id=1,
+        scene_ids=(205,),
+        runtime_states=states,
+        completed_episodes=1,
+        reward_reconstruction_errors=(1e-9,),
+    )
+    error = APPOWorkerError(
+        actor_id=1,
+        error_type='RuntimeError',
+        message='boom',
+        traceback='trace',
+    )
+
+    assert snapshot.generation == 3
+    assert snapshot.runtime_states == states
+    assert done.reward_reconstruction_errors == (1e-9,)
+    assert error.error_type == 'RuntimeError'
+
+
+def test_actor_loop_sends_chunks_then_terminal_runtime_state() -> None:
+    context = torch.multiprocessing.get_context('spawn')
+    model = _model()
+    store = SharedPolicyStore(
+        _model(),
+        context=context,
+        initial_version=0,
+    )
+    runtime = _ScriptedRuntime(num_events=2)
+    slots = [
+        SynchronousRuntimeSlot(
+            environment_index=205,
+            episode_id=0,
+            observation=runtime.reset(),
+            runtime=runtime,
+        ),
+    ]
+    queue = context.Queue()
+    stop = context.Event()
+
+    run_appo_actor_loop(
+        model=model,
+        slots=slots,
+        actor_id=0,
+        scene_ids=(205,),
+        policy_store=store,
+        result_queue=queue,
+        stop_event=stop,
+        target_events=1,
+        device=torch.device('cpu'),
+        replay_atol=1e-6,
+    )
+
+    first = queue.get(timeout=2)
+    second = queue.get(timeout=2)
+    done = queue.get(timeout=2)
+    assert isinstance(first, APPORolloutChunk)
+    assert isinstance(second, APPORolloutChunk)
+    assert isinstance(done, APPODone)
+    assert done.completed_episodes == 1
+    assert done.runtime_states[0]['runtime']['events'] == 2

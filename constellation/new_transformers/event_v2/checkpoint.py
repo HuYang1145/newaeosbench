@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from .model import EventJointActorCritic
+from .rollout import StoredEventStep
 from .transition import transition_schema_fingerprint
 
 
@@ -152,6 +153,7 @@ class APPORestore:
     counters: APPOCounters
     actor_scene_shards: tuple[tuple[int, ...], ...]
     actor_runtime_states: tuple[tuple[Mapping[str, Any], ...], ...]
+    pending_steps: tuple[StoredEventStep, ...]
     normalizer: Mapping[str, torch.Tensor]
 
 
@@ -215,6 +217,7 @@ def build_appo_checkpoint(
     encoder_layers: int,
     decoder_layers: int,
     backbone_lr_scale: float,
+    pending_steps: Sequence[StoredEventStep] = (),
 ) -> dict[str, Any]:
     if model.backbone_is_frozen:
         raise ValueError('APPO checkpoint requires an unfrozen Stage3 tail')
@@ -229,6 +232,11 @@ def build_appo_checkpoint(
         actor_runtime_states,
         scene_shards=shards,
     )
+    pending_steps = tuple(pending_steps)
+    for step in pending_steps:
+        if not isinstance(step, StoredEventStep):
+            raise ValueError('APPO pending steps have an invalid type')
+        step.validate()
     return {
         'checkpoint_version': APPO_CHECKPOINT_VERSION,
         'stage': APPO_STAGE,
@@ -246,6 +254,7 @@ def build_appo_checkpoint(
         'rng_state': capture_rng_state(),
         'actor_scene_shards': shards,
         'actor_runtime_states': runtime_states,
+        'pending_steps': pending_steps,
         'updates': counters.updates,
         'accepted_events': counters.accepted_events,
         'stale_dropped_events': counters.stale_dropped_events,
@@ -307,6 +316,14 @@ def load_appo_checkpoint(
         checkpoint.get('actor_runtime_states', ()),
         scene_shards=shards,
     )
+    pending_steps = checkpoint.get('pending_steps', ())
+    if not isinstance(pending_steps, (list, tuple)):
+        raise ValueError('APPO checkpoint pending steps are invalid')
+    pending_steps = tuple(pending_steps)
+    for step in pending_steps:
+        if not isinstance(step, StoredEventStep):
+            raise ValueError('APPO checkpoint pending step type is invalid')
+        step.validate()
     normalizer = checkpoint.get('normalizer')
     if not isinstance(normalizer, Mapping) or not all(
         isinstance(value, torch.Tensor) for value in normalizer.values()
@@ -333,6 +350,7 @@ def load_appo_checkpoint(
         counters=counters,
         actor_scene_shards=shards,
         actor_runtime_states=runtime_states,
+        pending_steps=pending_steps,
         normalizer=dict(normalizer),
     )
 
