@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import torch
 
@@ -45,6 +45,77 @@ class APPOUpdateMetrics:
     stale_dropped_events: int
     minimum_behavior_version: int
     maximum_behavior_version: int
+
+
+class SharedPolicyRefresh(NamedTuple):
+    version: int
+    refreshed: bool
+
+
+class SharedPolicyStore:
+    """通过共享 CPU tensors 原子发布完整策略版本。"""
+
+    def __init__(
+        self,
+        model: EventJointActorCritic,
+        *,
+        context: Any,
+        initial_version: int,
+    ) -> None:
+        if initial_version < 0:
+            raise ValueError('initial policy version must be non-negative')
+        self.model = model.cpu()
+        self.model.share_memory()
+        self._version = context.Value('q', initial_version)
+        self._lock = context.RLock()
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return int(self._version.value)
+
+    def publish(
+        self,
+        source_model: EventJointActorCritic,
+        *,
+        version: int,
+    ) -> None:
+        with self._lock:
+            if version <= self._version.value:
+                raise ValueError(
+                    'shared policy versions must increase monotonically',
+                )
+            source_state = source_model.state_dict()
+            shared_state = self.model.state_dict()
+            if set(source_state) != set(shared_state):
+                raise ValueError('shared policy state keys do not match')
+            with torch.no_grad():
+                for name, target in shared_state.items():
+                    target.copy_(source_state[name].detach().to('cpu'))
+            self._version.value = version
+
+    def refresh(
+        self,
+        target_model: EventJointActorCritic,
+        *,
+        last_version: int,
+    ) -> SharedPolicyRefresh:
+        if last_version < -1:
+            raise ValueError('last policy version is invalid')
+        with self._lock:
+            current = int(self._version.value)
+            if current == last_version:
+                return SharedPolicyRefresh(
+                    version=current,
+                    refreshed=False,
+                )
+            if current < last_version:
+                raise ValueError('target policy version is ahead of store')
+            target_model.load_state_dict(self.model.state_dict())
+            return SharedPolicyRefresh(
+                version=current,
+                refreshed=True,
+            )
 
 
 def filter_policy_lag(

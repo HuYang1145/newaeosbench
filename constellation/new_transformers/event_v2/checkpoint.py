@@ -21,6 +21,8 @@ from .transition import transition_schema_fingerprint
 SYNC_PPO_CHECKPOINT_VERSION = 1
 SYNC_PPO_STAGE = 'V2-1'
 SYNC_PPO_STAGES = frozenset({'V2-1', 'V2-2'})
+APPO_CHECKPOINT_VERSION = 1
+APPO_STAGE = 'V2-3'
 
 
 def _jsonable(value: Any) -> Any:
@@ -101,6 +103,27 @@ class SyncPPOCounters:
 
 
 @dataclass(frozen=True)
+class APPOCounters:
+    updates: int = 0
+    policy_version: int = 0
+    accepted_events: int = 0
+    stale_dropped_events: int = 0
+    processed_physical_seconds: int = 0
+    episodes: int = 0
+
+    def __post_init__(self) -> None:
+        if any(value < 0 for value in (
+            self.updates,
+            self.policy_version,
+            self.accepted_events,
+            self.stale_dropped_events,
+            self.processed_physical_seconds,
+            self.episodes,
+        )):
+            raise ValueError('APPO training counters must be non-negative')
+
+
+@dataclass(frozen=True)
 class SyncPPORestore:
     counters: SyncPPOCounters
     runtime_states: tuple[Mapping[str, Any], ...]
@@ -122,6 +145,196 @@ class SyncPPOPolicyMetadata:
     policy_version: int
     scene_ids: tuple[int, ...]
     config_fingerprint: str
+
+
+@dataclass(frozen=True)
+class APPORestore:
+    counters: APPOCounters
+    actor_scene_shards: tuple[tuple[int, ...], ...]
+    actor_runtime_states: tuple[tuple[Mapping[str, Any], ...], ...]
+    normalizer: Mapping[str, torch.Tensor]
+
+
+def _normalize_actor_scene_shards(
+    actor_scene_shards: Sequence[Sequence[int]],
+) -> tuple[tuple[int, ...], ...]:
+    shards = tuple(
+        tuple(int(scene_id) for scene_id in shard)
+        for shard in actor_scene_shards
+    )
+    flattened = tuple(scene_id for shard in shards for scene_id in shard)
+    if (
+        not shards
+        or any(not shard for shard in shards)
+        or any(scene_id < 0 for scene_id in flattened)
+        or len(flattened) != len(set(flattened))
+    ):
+        raise ValueError(
+            'APPO actor scene shards must be non-empty, unique and non-negative',
+        )
+    return shards
+
+
+def _normalize_actor_runtime_states(
+    actor_runtime_states: Sequence[Sequence[Mapping[str, Any]]],
+    *,
+    scene_shards: tuple[tuple[int, ...], ...],
+) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+    states = tuple(tuple(shard) for shard in actor_runtime_states)
+    if (
+        len(states) != len(scene_shards)
+        or any(
+            len(runtime_shard) != len(scene_shard)
+            for runtime_shard, scene_shard in zip(
+                states,
+                scene_shards,
+                strict=True,
+            )
+        )
+        or not all(
+            isinstance(state, Mapping)
+            for shard in states
+            for state in shard
+        )
+    ):
+        raise ValueError('APPO actor runtime states do not match scene shards')
+    return states
+
+
+def build_appo_checkpoint(
+    *,
+    model: EventJointActorCritic,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scaler: torch.amp.GradScaler,
+    config_fingerprint_value: str,
+    normalizer: Mapping[str, torch.Tensor],
+    counters: APPOCounters,
+    actor_scene_shards: Sequence[Sequence[int]],
+    actor_runtime_states: Sequence[Sequence[Mapping[str, Any]]],
+    encoder_layers: int,
+    decoder_layers: int,
+    backbone_lr_scale: float,
+) -> dict[str, Any]:
+    if model.backbone_is_frozen:
+        raise ValueError('APPO checkpoint requires an unfrozen Stage3 tail')
+    if encoder_layers <= 0 or decoder_layers <= 0:
+        raise ValueError('APPO unfreeze layer counts must be positive')
+    if not 0 < backbone_lr_scale <= 1:
+        raise ValueError('APPO backbone learning-rate scale is invalid')
+    if len(config_fingerprint_value) != 64:
+        raise ValueError('config fingerprint must be a SHA-256 hex digest')
+    shards = _normalize_actor_scene_shards(actor_scene_shards)
+    runtime_states = _normalize_actor_runtime_states(
+        actor_runtime_states,
+        scene_shards=shards,
+    )
+    return {
+        'checkpoint_version': APPO_CHECKPOINT_VERSION,
+        'stage': APPO_STAGE,
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+        'amp_scaler': scaler.state_dict(),
+        'policy_version': counters.policy_version,
+        'transition_schema_fingerprint': transition_schema_fingerprint(),
+        'config_fingerprint': config_fingerprint_value,
+        'normalizer': {
+            name: value.detach().cpu().clone()
+            for name, value in normalizer.items()
+        },
+        'rng_state': capture_rng_state(),
+        'actor_scene_shards': shards,
+        'actor_runtime_states': runtime_states,
+        'updates': counters.updates,
+        'accepted_events': counters.accepted_events,
+        'stale_dropped_events': counters.stale_dropped_events,
+        'processed_physical_seconds': counters.processed_physical_seconds,
+        'episodes': counters.episodes,
+        'unfreeze_state': {
+            'backbone_is_frozen': False,
+            'encoder_layers': encoder_layers,
+            'decoder_layers': decoder_layers,
+            'backbone_lr_scale': float(backbone_lr_scale),
+        },
+    }
+
+
+def load_appo_checkpoint(
+    *,
+    path: str | pathlib.Path,
+    model: EventJointActorCritic,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    scaler: torch.amp.GradScaler,
+    expected_config_fingerprint: str,
+    expected_actor_scene_shards: Sequence[Sequence[int]],
+    expected_encoder_layers: int,
+    expected_decoder_layers: int,
+    expected_backbone_lr_scale: float,
+) -> APPORestore:
+    checkpoint = torch.load(
+        pathlib.Path(path),
+        map_location='cpu',
+        weights_only=False,
+    )
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError('APPO checkpoint root must be a mapping')
+    if checkpoint.get('checkpoint_version') != APPO_CHECKPOINT_VERSION:
+        raise ValueError('APPO checkpoint version does not match')
+    if checkpoint.get('stage') != APPO_STAGE:
+        raise ValueError('APPO checkpoint stage does not match V2-3')
+    if checkpoint.get('transition_schema_fingerprint') != (
+        transition_schema_fingerprint()
+    ):
+        raise ValueError('APPO checkpoint schema fingerprint mismatch')
+    if checkpoint.get('config_fingerprint') != expected_config_fingerprint:
+        raise ValueError('APPO checkpoint config fingerprint mismatch')
+    shards = _normalize_actor_scene_shards(expected_actor_scene_shards)
+    if tuple(checkpoint.get('actor_scene_shards', ())) != shards:
+        raise ValueError('APPO checkpoint actor scene shards do not match')
+    expected_unfreeze = {
+        'backbone_is_frozen': False,
+        'encoder_layers': expected_encoder_layers,
+        'decoder_layers': expected_decoder_layers,
+        'backbone_lr_scale': float(expected_backbone_lr_scale),
+    }
+    if checkpoint.get('unfreeze_state') != expected_unfreeze:
+        raise ValueError('APPO checkpoint unfreeze state does not match')
+    if model.backbone_is_frozen:
+        raise ValueError('APPO restore target must unfreeze Stage3 first')
+    runtime_states = _normalize_actor_runtime_states(
+        checkpoint.get('actor_runtime_states', ()),
+        scene_shards=shards,
+    )
+    normalizer = checkpoint.get('normalizer')
+    if not isinstance(normalizer, Mapping) or not all(
+        isinstance(value, torch.Tensor) for value in normalizer.values()
+    ):
+        raise ValueError('APPO checkpoint normalizer is invalid')
+    counters = APPOCounters(
+        updates=int(checkpoint.get('updates', -1)),
+        policy_version=int(checkpoint.get('policy_version', -1)),
+        accepted_events=int(checkpoint.get('accepted_events', -1)),
+        stale_dropped_events=int(
+            checkpoint.get('stale_dropped_events', -1),
+        ),
+        processed_physical_seconds=int(
+            checkpoint.get('processed_physical_seconds', -1),
+        ),
+        episodes=int(checkpoint.get('episodes', -1)),
+    )
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
+    scaler.load_state_dict(checkpoint['amp_scaler'])
+    restore_rng_state(checkpoint['rng_state'])
+    return APPORestore(
+        counters=counters,
+        actor_scene_shards=shards,
+        actor_runtime_states=runtime_states,
+        normalizer=dict(normalizer),
+    )
 
 
 def build_sync_ppo_checkpoint(

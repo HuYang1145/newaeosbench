@@ -4,6 +4,7 @@ import torch
 from constellation.new_transformers.event_v2.appo import (
     APPOConfig,
     AsynchronousPPOLearner,
+    SharedPolicyStore,
     filter_policy_lag,
 )
 from constellation.new_transformers.event_v2.model import (
@@ -303,3 +304,37 @@ def _step_from_model(
     )
     step.validate()
     return step
+
+
+def test_shared_policy_store_publishes_complete_monotonic_versions() -> None:
+    context = torch.multiprocessing.get_context('spawn')
+    shared_model = _model()
+    source_model = _model()
+    target_model = _model()
+    store = SharedPolicyStore(
+        shared_model,
+        context=context,
+        initial_version=0,
+    )
+    with torch.no_grad():
+        for parameter in source_model.parameters():
+            parameter.add_(0.25)
+
+    store.publish(source_model, version=3)
+    result = store.refresh(target_model, last_version=0)
+
+    assert result.version == 3
+    assert result.refreshed is True
+    for name, value in target_model.state_dict().items():
+        torch.testing.assert_close(value, source_model.state_dict()[name])
+
+    with torch.no_grad():
+        next(target_model.parameters()).add_(1)
+    unchanged = next(target_model.parameters()).detach().clone()
+    result = store.refresh(target_model, last_version=3)
+
+    assert result.version == 3
+    assert result.refreshed is False
+    torch.testing.assert_close(next(target_model.parameters()), unchanged)
+    with pytest.raises(ValueError, match='monotonically'):
+        store.publish(source_model, version=3)
