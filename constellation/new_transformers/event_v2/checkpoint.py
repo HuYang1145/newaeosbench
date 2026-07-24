@@ -115,6 +115,15 @@ class SyncPPOBootstrap:
     source_scene_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class SyncPPOPolicyMetadata:
+    stage: str
+    updates: int
+    policy_version: int
+    scene_ids: tuple[int, ...]
+    config_fingerprint: str
+
+
 def build_sync_ppo_checkpoint(
     *,
     stage: str = SYNC_PPO_STAGE,
@@ -285,4 +294,54 @@ def load_sync_ppo_bootstrap_checkpoint(
         source_scene_ids=tuple(
             int(scene_id) for scene_id in checkpoint.get('scene_ids', ())
         ),
+    )
+
+
+def load_sync_ppo_policy_checkpoint(
+    *,
+    path: str | pathlib.Path,
+    model: EventJointActorCritic,
+    expected_stages: Sequence[str] = tuple(SYNC_PPO_STAGES),
+) -> SyncPPOPolicyMetadata:
+    """只读加载同步 PPO policy，不恢复任何训练或 runtime 状态。"""
+
+    checkpoint = torch.load(
+        pathlib.Path(path),
+        map_location='cpu',
+        weights_only=False,
+    )
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError('policy checkpoint root must be a mapping')
+    if checkpoint.get('checkpoint_version') != SYNC_PPO_CHECKPOINT_VERSION:
+        raise ValueError('policy checkpoint version does not match')
+    expected_stages = tuple(str(stage) for stage in expected_stages)
+    if (
+        not expected_stages
+        or any(stage not in SYNC_PPO_STAGES for stage in expected_stages)
+    ):
+        raise ValueError('policy expected stages are invalid')
+    stage = checkpoint.get('stage')
+    if stage not in expected_stages:
+        raise ValueError('policy checkpoint stage does not match')
+    if checkpoint.get('transition_schema_fingerprint') != (
+        transition_schema_fingerprint()
+    ):
+        raise ValueError('policy checkpoint schema fingerprint mismatch')
+    if checkpoint.get('unfreeze_state') != {'backbone_is_frozen': True}:
+        raise ValueError('policy checkpoint does not preserve freeze state')
+    fingerprint = checkpoint.get('config_fingerprint')
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        raise ValueError('policy checkpoint config fingerprint is invalid')
+
+    model.load_state_dict(checkpoint['model'])
+    if not model.backbone_is_frozen:
+        raise ValueError('policy checkpoint unexpectedly unfreezes Stage3')
+    return SyncPPOPolicyMetadata(
+        stage=str(stage),
+        updates=int(checkpoint.get('updates', -1)),
+        policy_version=int(checkpoint.get('policy_version', -1)),
+        scene_ids=tuple(
+            int(scene_id) for scene_id in checkpoint.get('scene_ids', ())
+        ),
+        config_fingerprint=fingerprint,
     )

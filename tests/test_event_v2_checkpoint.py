@@ -11,6 +11,7 @@ from constellation.new_transformers.event_v2.checkpoint import (
     config_fingerprint,
     load_sync_ppo_bootstrap_checkpoint,
     load_sync_ppo_checkpoint,
+    load_sync_ppo_policy_checkpoint,
     save_checkpoint_atomic,
 )
 from constellation.new_transformers.event_v2.model import EventJointActorCritic
@@ -284,3 +285,65 @@ def test_bootstrap_loads_v2_1_policy_optimizer_without_runtime_or_rng(
     )
     for name, value in target_model.state_dict().items():
         torch.testing.assert_close(value, source_parameters[name])
+
+
+def test_policy_loader_only_restores_model_and_returns_metadata(tmp_path) -> None:
+    source_model, _, _, _, _, checkpoint = _build_checkpoint()
+    checkpoint['stage'] = 'V2-2'
+    checkpoint['updates'] = 914
+    checkpoint['policy_version'] = 914
+    path = tmp_path / 'v2_2_policy.pth'
+    save_checkpoint_atomic(path, checkpoint)
+
+    target_model = _model()
+    with torch.no_grad():
+        for parameter in target_model.parameters():
+            if parameter.requires_grad:
+                parameter.add_(1)
+    random.seed(999)
+    np.random.seed(999)
+    torch.manual_seed(999)
+    rng_before = torch.get_rng_state().clone()
+
+    metadata = load_sync_ppo_policy_checkpoint(
+        path=path,
+        model=target_model,
+        expected_stages=('V2-1', 'V2-2'),
+    )
+
+    assert metadata.stage == 'V2-2'
+    assert metadata.updates == 914
+    assert metadata.policy_version == 914
+    assert metadata.scene_ids == (0, 1)
+    assert metadata.config_fingerprint == checkpoint['config_fingerprint']
+    assert torch.equal(torch.get_rng_state(), rng_before)
+    for name, value in target_model.state_dict().items():
+        torch.testing.assert_close(value, source_model.state_dict()[name])
+
+
+@pytest.mark.parametrize(
+    ('field', 'value', 'message'),
+    [
+        ('checkpoint_version', 99, 'version'),
+        ('stage', 'V2-0', 'stage'),
+        ('transition_schema_fingerprint', 'bad', 'schema'),
+        ('unfreeze_state', {'backbone_is_frozen': False}, 'freeze'),
+    ],
+)
+def test_policy_loader_rejects_incompatible_checkpoint(
+    tmp_path,
+    field: str,
+    value,
+    message: str,
+) -> None:
+    model, _, _, _, _, checkpoint = _build_checkpoint()
+    checkpoint[field] = value
+    path = tmp_path / 'bad_policy.pth'
+    torch.save(checkpoint, path)
+
+    with pytest.raises(ValueError, match=message):
+        load_sync_ppo_policy_checkpoint(
+            path=path,
+            model=model,
+            expected_stages=('V2-1', 'V2-2'),
+        )

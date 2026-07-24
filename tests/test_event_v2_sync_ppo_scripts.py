@@ -17,6 +17,10 @@ SCRIPT = ROOT / 'scripts/train_event_v2_sync_ppo_slurm.sh'
 RESUME_SCRIPT = ROOT / 'scripts/resume_event_v2_sync_ppo_slurm.sh'
 FULL_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_2_sync_ppo_slurm.sh'
 FULL_SCRIPT = ROOT / 'scripts/train_event_v2_2_full_slurm.sh'
+HELDOUT_SCRIPT = ROOT / 'scripts/evaluate_event_v2_heldout_slurm.sh'
+HELDOUT_SMOKE_SCRIPT = (
+    ROOT / 'scripts/smoke_evaluate_event_v2_heldout_slurm.sh'
+)
 
 
 def test_config_is_train_only_and_keeps_stage3_frozen() -> None:
@@ -231,3 +235,42 @@ def test_exact_resume_keeps_finished_slots_for_future_checkpoints(
 
     assert len(slots) == 2
     assert [slot.finished for slot in slots] == [True, False]
+
+
+def test_heldout_wrapper_compares_only_final_checkpoints_on_fixed_train_scenes(
+) -> None:
+    script = HELDOUT_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --gres=gpu:3' in script
+    assert 'evaluate_event_v2_policy.py' in script
+    assert 'select_event_v2_heldout.py' in script
+    assert 'checkpoint_update_000101.pth' in script
+    assert 'checkpoint_update_001046.pth' in script
+    assert 'checkpoint_update_000950.pth' in script
+    assert 'checkpoint_update_000924.pth' in script
+    assert 'checkpoint_update_000914.pth' in script
+    assert 'seq 196 203' in script
+    assert '--split train' in script
+    assert '--max-time-step 3600' in script
+    assert '--expected-scene-ids "${SCENE_IDS[@]}"' in script
+    assert 'val_seen' not in script.lower()
+    assert 'val_unseen' not in script.lower()
+    assert '--split test' not in script.lower()
+    assert os.access(HELDOUT_SCRIPT, os.X_OK)
+
+
+def test_heldout_smoke_runs_baseline_and_candidate_on_one_full_scene() -> None:
+    script = HELDOUT_SMOKE_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --gres=gpu:1' in script
+    assert 'checkpoint_update_000101.pth' in script
+    assert 'checkpoint_update_001046.pth' in script
+    assert '--split train' in script
+    assert '--scene-ids 196' in script
+    assert '--max-time-step 3600' in script
+    assert 'val_seen' not in script.lower()
+    assert 'val_unseen' not in script.lower()
+    assert '--split test' not in script.lower()
+    assert os.access(HELDOUT_SMOKE_SCRIPT, os.X_OK)
