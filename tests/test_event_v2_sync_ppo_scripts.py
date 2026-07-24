@@ -242,7 +242,10 @@ def test_heldout_wrapper_compares_only_final_checkpoints_on_fixed_train_scenes(
     script = HELDOUT_SCRIPT.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:3' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert 'nvidia-smi --query-gpu=index,memory.used' in script
+    assert 'free_gpu_indices' in script
+    assert 'CUDA_VISIBLE_DEVICES="${gpu_index}"' in script
     assert 'evaluate_event_v2_policy.py' in script
     assert 'select_event_v2_heldout.py' in script
     assert 'checkpoint_update_000101.pth' in script
@@ -264,7 +267,10 @@ def test_heldout_smoke_runs_baseline_and_candidate_on_one_full_scene() -> None:
     script = HELDOUT_SMOKE_SCRIPT.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:1' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert 'nvidia-smi --query-gpu=index,memory.used' in script
+    assert 'free_gpu_indices' in script
+    assert 'CUDA_VISIBLE_DEVICES="${GPU_INDEX}"' in script
     assert 'checkpoint_update_000101.pth' in script
     assert 'checkpoint_update_001046.pth' in script
     assert '--split train' in script

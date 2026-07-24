@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_heldout
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:3
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=96G
 #SBATCH --time=04:00:00
@@ -30,7 +30,6 @@ CHECKPOINTS=(
   "${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_2/checkpoint_update_000924.pth"
   "${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_3/checkpoint_update_000914.pth"
 )
-GPU_ASSIGNMENTS=(0 1 2 0 1)
 
 cd "${ROOT_DIR}"
 export PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}"
@@ -45,6 +44,28 @@ for checkpoint in "${CHECKPOINTS[@]}"; do
     exit 1
   fi
 done
+
+free_gpu_indices=()
+while IFS=',' read -r gpu_index memory_used; do
+  gpu_index="${gpu_index// /}"
+  memory_used="${memory_used// /}"
+  if (( memory_used < 4096 )); then
+    free_gpu_indices+=("${gpu_index}")
+  fi
+done < <(
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits
+)
+if (( ${#free_gpu_indices[@]} < 3 )); then
+  echo "[error] held-out evaluation needs three physically free GPUs" >&2
+  exit 1
+fi
+GPU_ASSIGNMENTS=(
+  "${free_gpu_indices[0]}"
+  "${free_gpu_indices[1]}"
+  "${free_gpu_indices[2]}"
+  "${free_gpu_indices[0]}"
+  "${free_gpu_indices[1]}"
+)
 
 mkdir -p "${OUTPUT_ROOT}"
 pids=()

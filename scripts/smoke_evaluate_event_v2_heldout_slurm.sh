@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_eval_smoke
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
@@ -32,9 +32,25 @@ for checkpoint in "${BASELINE}" "${CANDIDATE}"; do
   fi
 done
 
+free_gpu_indices=()
+while IFS=',' read -r gpu_index memory_used; do
+  gpu_index="${gpu_index// /}"
+  memory_used="${memory_used// /}"
+  if (( memory_used < 4096 )); then
+    free_gpu_indices+=("${gpu_index}")
+  fi
+done < <(
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits
+)
+if (( ${#free_gpu_indices[@]} < 1 )); then
+  echo "[error] held-out smoke needs one physically free GPU" >&2
+  exit 1
+fi
+GPU_INDEX="${free_gpu_indices[0]}"
+
 mkdir -p "${OUTPUT_ROOT}/v2_1" "${OUTPUT_ROOT}/v2_2_replica_0"
 pids=()
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES="${GPU_INDEX}" \
   "${PYTHON}" tools/evaluate_event_v2_policy.py \
     --config "${CONFIG}" \
     --checkpoint "${BASELINE}" \
@@ -46,7 +62,7 @@ CUDA_VISIBLE_DEVICES=0 \
     --output "${OUTPUT_ROOT}/v2_1" \
     >"${OUTPUT_ROOT}/v2_1/evaluate.log" 2>&1 &
 pids+=("$!")
-CUDA_VISIBLE_DEVICES=0 \
+CUDA_VISIBLE_DEVICES="${GPU_INDEX}" \
   "${PYTHON}" tools/evaluate_event_v2_policy.py \
     --config "${CONFIG}" \
     --checkpoint "${CANDIDATE}" \
