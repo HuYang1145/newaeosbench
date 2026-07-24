@@ -305,14 +305,27 @@ sum(event_reward) = Q_final
 ### V2-3：APPO 扩展
 
 - [x] 只在同步 PPO 8+8 通过后启动。
-- [ ] 按
+- [x] 按
   `docs/superpowers/plans/2026-07-24-event-v2-appo-expansion.md`
-  实现并验证 V2-3。
-- [ ] 解冻 Stage3 最后 1–2 层，使用约新模块 `0.1x` 学习率。
-- [ ] 使用全部可申请 GPU、最多 120 个异步 Basilisk actor。
-- [ ] 使用剩余约 24–28 小时预算。
-- [ ] 保存 behavior log-prob 和 policy version。
-- [ ] 使用 importance ratio、PPO clipping 和 policy-lag 上限；过旧样本直接丢弃。
+  完成 V2-3 policy-lag、learner、共享 policy、actor 进程、checkpoint/恢复和 Slurm
+  入口；V2 全量相关回归 `168 passed`，合成 APPO `accepted=true`。
+- [x] 解冻 Stage3 Encoder/Decoder 最后各 1 层；新模块学习率 `1e-6`，解冻层
+  学习率 `1e-7`，其余 Stage3 参数继续逐值审计。
+- [x] 保存 behavior log-prob 和 policy version；learner 使用 importance ratio、
+  PPO clipping 和 `max_policy_lag=2`，过旧事件直接丢弃。
+- [x] 首次真实 smoke job `2226` 在 spawn 前发现旧 Transformer 内部局部
+  `lambda` 不可 pickle；共享方式已从完整 Module 改为仅共享 CPU 参数 tensors。
+  第二次 job `2227` 完成 13 次更新后暴露 actor 过早退出导致最后队列 tensor 的
+  resource sharer 消失；已增加 learner acknowledgement，两个失败均未改模型或门槛。
+- [x] 修复后的完整 train scene 205 smoke job `2228` 已 `COMPLETED 0:0`，
+  用时 `00:07:46`、`accepted=true`：14 updates、1,671 accepted events、
+  96 stale events 被按预注册上限丢弃，reward 重建误差 `0`、actor log-prob
+  重放误差 `0`、冻结参数变化 `0`、checkpoint 第一动作可复现。
+- [ ] 正式 V2-3 job `2229` 已自动提交并运行：固定 train scenes `205–324`、
+  最多 120 个环境、当前 3 张物理空闲 GPU、120 CPU、200 GiB、上限 28 小时；
+  learner 与 actor 异步运行。日志：
+  `work_dirs/eval_logs/event_v2_appo_full_2229.log`；输出：
+  `work_dirs/event_joint_transformer_v2/v2_3_appo/full_2229/`。
 
 ## 资源边界
 
