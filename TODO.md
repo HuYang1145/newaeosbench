@@ -283,6 +283,10 @@ sum(event_reward) = Q_final
 - [ ] 五个最终 checkpoint × 固定 held-out train scenes `196–203` 的正式确定性
   比较已提交为 job `2212`，完成后自动生成 `selection.json` 并按 Q 选择 V2-2
   候选；日志：`work_dirs/eval_logs/event_v2_heldout_2212.log`。
+- [ ] 自动依赖链已提交：job `2213` 使用 `afterok:2212` 对 selected checkpoint
+  运行 train scene 204 的完整 3,600 秒 smoke；job `2214` 使用 `afterok:2213`
+  运行唯一一次 Val Seen/Unseen 8+8，并严格执行两个 split 的 Q 均提高至少
+  `0.005`、任一 CR/PCR/WCR 不得下降的门槛。任一上游失败都会阻止下游运行。
 - [ ] checkpoint 只根据固定 held-out train scenes 的 `Q` 和训练稳定性选取。
 - [ ] 运行一个完整 3,600 秒 train scene smoke。
 - [ ] 只运行一次 Val Seen/Unseen 8+8。
