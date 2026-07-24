@@ -23,6 +23,8 @@ HELDOUT_SMOKE_SCRIPT = (
 )
 SELECTED_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_selected_slurm.sh'
 VAL_GATE_SCRIPT = ROOT / 'scripts/evaluate_event_v2_val8_gate_slurm.sh'
+APPO_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_appo_slurm.sh'
+APPO_FULL_SCRIPT = ROOT / 'scripts/train_event_v2_appo_full_slurm.sh'
 
 
 def test_config_is_train_only_and_keeps_stage3_frozen() -> None:
@@ -314,3 +316,51 @@ def test_val8_gate_runs_baseline_and_selected_once_on_both_splits() -> None:
     assert '--expected-scene-ids "${SCENE_IDS[@]}"' in script
     assert '--split test' not in script.lower()
     assert os.access(VAL_GATE_SCRIPT, os.X_OK)
+
+
+def test_appo_smoke_uses_selected_checkpoint_and_one_full_train_scene() -> None:
+    script = APPO_SMOKE_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --account=lab_team' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert '/home/hy/miniconda3/envs/aeos/bin/python' in script
+    assert 'config_event_v2_appo.py' in script
+    assert 'checkpoint_update_001046.pth' in script
+    assert 'nvidia-smi --query-gpu=index,memory.used' in script
+    assert 'if (( ${#free_gpu_indices[@]} < 2 )); then' in script
+    assert '--scene-ids 205' in script
+    assert '--max-time-step 3600' in script
+    assert '--actor-devices' in script
+    assert '--device' in script
+    assert 'event_v2_appo_smoke_%j.log' in script
+    assert 'val_seen' not in script.lower()
+    assert 'val_unseen' not in script.lower()
+    assert '/test/' not in script.lower()
+    assert os.access(APPO_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_appo_full_uses_up_to_120_scenes_and_requires_passed_smoke() -> None:
+    script = APPO_FULL_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --account=lab_team' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --cpus-per-task=120' in script
+    assert '#SBATCH --mem=200G' in script
+    assert '#SBATCH --time=28:00:00' in script
+    assert 'config_event_v2_appo.py' in script
+    assert 'checkpoint_update_001046.pth' in script
+    assert "json.load(open(sys.argv[1]))['accepted']" in script
+    assert 'if [[ "${SMOKE_ACCEPTED}" != "True" ]]' in script
+    assert 'nvidia-smi --query-gpu=index,memory.used' in script
+    assert 'if (( ${#free_gpu_indices[@]} < 2 )); then' in script
+    assert 'seq 205 324' in script
+    assert '--max-time-step 3600' in script
+    assert '--max-updates 5000' in script
+    assert '--actor-devices "${ACTOR_DEVICES[@]}"' in script
+    assert 'event_v2_appo_full_%j.log' in script
+    assert 'val_seen' not in script.lower()
+    assert 'val_unseen' not in script.lower()
+    assert '/test/' not in script.lower()
+    assert os.access(APPO_FULL_SCRIPT, os.X_OK)
