@@ -352,6 +352,25 @@ def test_shared_policy_store_publishes_complete_monotonic_versions() -> None:
         store.publish(source_model, version=3)
 
 
+def test_shared_policy_store_does_not_pickle_the_transformer_module() -> None:
+    context = torch.multiprocessing.get_context('spawn')
+    store = SharedPolicyStore(
+        _model(),
+        context=context,
+        initial_version=0,
+    )
+
+    assert not any(
+        isinstance(value, torch.nn.Module)
+        for value in vars(store).values()
+    )
+    assert store.shared_state
+    assert all(
+        isinstance(value, torch.Tensor) and value.is_shared()
+        for value in store.shared_state.values()
+    )
+
+
 class _ScriptedRuntime:
     def __init__(self, num_events: int = 2) -> None:
         self.num_events = num_events

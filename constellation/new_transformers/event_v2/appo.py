@@ -171,8 +171,11 @@ class SharedPolicyStore:
     ) -> None:
         if initial_version < 0:
             raise ValueError('initial policy version must be non-negative')
-        self.model = model.cpu()
-        self.model.share_memory()
+        self.shared_state = {}
+        for name, value in model.state_dict().items():
+            shared = value.detach().to('cpu').clone()
+            shared.share_memory_()
+            self.shared_state[name] = shared
         self._version = context.Value('q', initial_version)
         self._lock = context.RLock()
 
@@ -193,11 +196,10 @@ class SharedPolicyStore:
                     'shared policy versions must increase monotonically',
                 )
             source_state = source_model.state_dict()
-            shared_state = self.model.state_dict()
-            if set(source_state) != set(shared_state):
+            if set(source_state) != set(self.shared_state):
                 raise ValueError('shared policy state keys do not match')
             with torch.no_grad():
-                for name, target in shared_state.items():
+                for name, target in self.shared_state.items():
                     target.copy_(source_state[name].detach().to('cpu'))
             self._version.value = version
 
@@ -218,7 +220,7 @@ class SharedPolicyStore:
                 )
             if current < last_version:
                 raise ValueError('target policy version is ahead of store')
-            target_model.load_state_dict(self.model.state_dict())
+            target_model.load_state_dict(self.shared_state)
             return SharedPolicyRefresh(
                 version=current,
                 refreshed=True,
