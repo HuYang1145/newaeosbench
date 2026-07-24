@@ -21,6 +21,8 @@ HELDOUT_SCRIPT = ROOT / 'scripts/evaluate_event_v2_heldout_slurm.sh'
 HELDOUT_SMOKE_SCRIPT = (
     ROOT / 'scripts/smoke_evaluate_event_v2_heldout_slurm.sh'
 )
+SELECTED_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_selected_slurm.sh'
+VAL_GATE_SCRIPT = ROOT / 'scripts/evaluate_event_v2_val8_gate_slurm.sh'
 
 
 def test_config_is_train_only_and_keeps_stage3_frozen() -> None:
@@ -280,3 +282,35 @@ def test_heldout_smoke_runs_baseline_and_candidate_on_one_full_scene() -> None:
     assert 'val_unseen' not in script.lower()
     assert '--split test' not in script.lower()
     assert os.access(HELDOUT_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_selected_smoke_reads_heldout_selection_and_runs_new_train_scene() -> None:
+    script = SELECTED_SMOKE_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert 'heldout_2212/selection.json' in script
+    assert "['selected']['checkpoint']" in script
+    assert '--split train' in script
+    assert '--scene-ids 204' in script
+    assert '--max-time-step 3600' in script
+    assert 'val_seen' not in script.lower()
+    assert 'val_unseen' not in script.lower()
+    assert os.access(SELECTED_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_val8_gate_runs_baseline_and_selected_once_on_both_splits() -> None:
+    script = VAL_GATE_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert 'heldout_2212/selection.json' in script
+    assert 'checkpoint_update_000101.pth' in script
+    assert 'SPLITS=("val_seen" "val_seen" "val_unseen" "val_unseen")' in script
+    assert '--split "${split}"' in script
+    assert 'SCENE_IDS=($(seq 0 7))' in script
+    assert 'compare_event_v2_val_gate.py' in script
+    assert '--minimum-q-improvement 0.005' in script
+    assert '--expected-scene-ids "${SCENE_IDS[@]}"' in script
+    assert '--split test' not in script.lower()
+    assert os.access(VAL_GATE_SCRIPT, os.X_OK)

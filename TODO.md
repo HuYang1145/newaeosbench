@@ -263,13 +263,26 @@ sum(event_reward) = Q_final
   `0`、冻结参数变化数为 `0`、checkpoint 第一动作可复现。日志：
   `work_dirs/eval_logs/event_v2_2_smoke_2194.log`；输出：
   `work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/smoke_2194/`。
-- [ ] 正式全预算同步训练 job `2203` 已提交并开始运行：`local-10`、当前全部 3 张
-  可用 GPU、96 CPU、160 GiB、上限 16 小时。四个 replica 使用独立 seed，
-  分别训练 scenes `4–51`、`52–99`、`100–147`、`148–195`；固定 held-out train
-  scenes 为 `196–203`，训练期间不访问 Val/Test。父日志：
+- [x] 正式全预算同步训练 job `2203` 已 `COMPLETED 0:0`，用时 `10:29:57`：
+  `local-10`、当前全部 3 张可用 GPU、96 CPU、160 GiB。四个 replica 使用独立
+  seed，分别训练 scenes `4–51`、`52–99`、`100–147`、`148–195`；固定 held-out
+  train scenes 为 `196–203`，训练期间未访问 Val/Test。四个 replica 均为
+  `accepted=true`、48/48 scenes 完成、数值有限、reward 重建误差小于
+  `5e-10`、log-prob 重放误差为 `0`、冻结参数变化为 `0`、checkpoint 第一动作
+  可复现；最终 updates 分别为 `1046/950/924/914`。父日志：
   `work_dirs/eval_logs/event_v2_2_full_2203.log`；replica 日志位于
   `work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_{0,1,2,3}/train_2203.log`。
-- [ ] 建议最多 12–16 小时。
+- [x] 运行时间满足最多 12–16 小时预算。
+- [x] 已实现固定 held-out train checkpoint selector；完整 scene 196 确定性评估
+  smoke job `2211` 已 `COMPLETED 0:0`，用时 `00:01:17`。V2-1 的
+  `CR/PCR/WCR/Q=0.08676/0.09813/0.08974/0.08963`，V2-2 replica 0 为
+  `0.12329/0.14185/0.12643/0.12763`，四项均上升且 reward 重建误差小于
+  `3e-11`。首次 job `2208` 因 GPU 0 被 Slurm 外部进程占满而 OOM，已改为申请
+  完整设备可见性并自动排除显存占用超过 4 GiB 的物理卡，未改变模型、场景或评估
+  协议。
+- [ ] 五个最终 checkpoint × 固定 held-out train scenes `196–203` 的正式确定性
+  比较已提交为 job `2212`，完成后自动生成 `selection.json` 并按 Q 选择 V2-2
+  候选；日志：`work_dirs/eval_logs/event_v2_heldout_2212.log`。
 - [ ] checkpoint 只根据固定 held-out train scenes 的 `Q` 和训练稳定性选取。
 - [ ] 运行一个完整 3,600 秒 train scene smoke。
 - [ ] 只运行一次 Val Seen/Unseen 8+8。
