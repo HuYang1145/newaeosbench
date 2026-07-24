@@ -12,10 +12,13 @@ Stage3 `JointModel` 并行存在，不覆盖 Stage3 checkpoint、M2/M3 结果或
 
 `docs/superpowers/plans/2026-07-21-event-joint-transformer-v2-foundation.md`
 
-当前工作分支为 `codex/offline-critic-ranking`。V2 模型、旧轨迹事件数据、离线
-warm-start loss、checkpoint 和 Slurm 入口已经实现；121 个 V2/邻接旧回归测试通过。
-V2-0 正式 10k GPU warm start 和 64 场 `val_unseen` 离线验收均已完成；同步 PPO 和
-Basilisk Val 尚未运行，因此仍没有完成率提高证据。离线验收设计和实施记录为：
+当前工作分支为 `codex/offline-critic-ranking`。V2-0 离线 warm start、V2-1 同步
+PPO 正确性、V2-2 同步 PPO 收益训练和唯一一次 Basilisk Val Seen/Unseen 8+8 门槛
+均已完成。V2-2 selected checkpoint 在两个 split 的 `Q` 分别提高 `2.79` 和
+`3.18` 个百分点，且 `CR/PCR/WCR` 全部上升，已经获得第一份正式完成率提高证据。
+当前自动进入 V2-3 APPO 扩展。
+
+离线验收设计和实施记录为：
 
 `docs/superpowers/specs/2026-07-22-event-v2-unseen-offline-acceptance-design.md`
 
@@ -280,21 +283,31 @@ sum(event_reward) = Q_final
   `3e-11`。首次 job `2208` 因 GPU 0 被 Slurm 外部进程占满而 OOM，已改为申请
   完整设备可见性并自动排除显存占用超过 4 GiB 的物理卡，未改变模型、场景或评估
   协议。
-- [ ] 五个最终 checkpoint × 固定 held-out train scenes `196–203` 的正式确定性
-  比较已提交为 job `2212`，完成后自动生成 `selection.json` 并按 Q 选择 V2-2
-  候选；日志：`work_dirs/eval_logs/event_v2_heldout_2212.log`。
-- [ ] 自动依赖链已提交：job `2213` 使用 `afterok:2212` 对 selected checkpoint
-  运行 train scene 204 的完整 3,600 秒 smoke；job `2214` 使用 `afterok:2213`
-  运行唯一一次 Val Seen/Unseen 8+8，并严格执行两个 split 的 Q 均提高至少
-  `0.005`、任一 CR/PCR/WCR 不得下降的门槛。任一上游失败都会阻止下游运行。
-- [ ] checkpoint 只根据固定 held-out train scenes 的 `Q` 和训练稳定性选取。
-- [ ] 运行一个完整 3,600 秒 train scene smoke。
-- [ ] 只运行一次 Val Seen/Unseen 8+8。
-- [ ] 未通过完成率门槛则停止，不使用 APPO 掩盖同步策略问题。
+- [x] 五个最终 checkpoint × 固定 held-out train scenes `196–203` 的正式确定性
+  比较 job `2212` 已 `COMPLETED 0:0`，用时 `00:28:45`。V2-2 replica 0 以
+  `Q=0.311805` 入选，相对 V2-1 的 `Q=0.287824` 提高 `2.398` 个百分点；
+  `CR/PCR/WCR` 分别提高 `2.519/1.921/2.511` 个百分点。选择结果：
+  `work_dirs/event_joint_transformer_v2/v2_2_heldout/heldout_2212/selection.json`。
+- [x] selected checkpoint 的完整 train scene 204 smoke job `2213` 已
+  `COMPLETED 0:0`，用时 `00:04:08`；`Q=0.498340`、reward 重建误差
+  `2.91e-11`、数值有限。
+- [x] 唯一一次 Val Seen/Unseen 8+8 的原 job `2214` 在评估中途收到外部
+  `SIGTERM`，无 Python 异常、无 OOM、未生成 gate，不能作为模型结果。4 张 GPU
+  空闲后按同一 checkpoint、场景和协议原样重跑 job `2225`，已
+  `COMPLETED 0:0`，用时 `00:36:10`。
+- [x] Val Seen：`Q 0.405210 -> 0.433100`，提高 `2.789` 个百分点；
+  `CR/PCR/WCR` 分别提高 `2.863/2.457/2.899` 个百分点。
+- [x] Val Unseen：`Q 0.260397 -> 0.292165`，提高 `3.177` 个百分点；
+  `CR/PCR/WCR` 分别提高 `3.237/3.213/2.962` 个百分点。
+- [x] 两个 split 均超过预注册的 `0.5` 个百分点门槛，且任一
+  `CR/PCR/WCR` 均未下降；`gate.json` 的 `passed=true`。允许进入 V2-3。
 
 ### V2-3：APPO 扩展
 
-- [ ] 只在同步 PPO 8+8 通过后启动。
+- [x] 只在同步 PPO 8+8 通过后启动。
+- [ ] 按
+  `docs/superpowers/plans/2026-07-24-event-v2-appo-expansion.md`
+  实现并验证 V2-3。
 - [ ] 解冻 Stage3 最后 1–2 层，使用约新模块 `0.1x` 学习率。
 - [ ] 使用全部可申请 GPU、最多 120 个异步 Basilisk actor。
 - [ ] 使用剩余约 24–28 小时预算。
