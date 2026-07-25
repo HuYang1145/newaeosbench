@@ -431,3 +431,61 @@ V2-0 单步 preflight checkpoint 已验证上述字段，实际大小约 `367 Mi
 - [x] 已写同步 PPO/Event Runtime 实施计划，并通过 CPU 合成闭环与 scene 0 的 10 秒
   真实 smoke；job `1018` 在正式 BF16 首个 update 暴露并阻断了批量形状导致的
   log-prob 重放误差，修复重试通过后才进入 V2-2，不直接进入 Val 8+8。
+
+## 追加主线：V2-2 大规模同步 PPO
+
+目标是在当前最佳
+`work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_0/checkpoint_update_001046.pth`
+基础上扩大同步 PPO，而不是继续使用当前 APPO 配置。训练期间所有采样器必须使用同一
+policy version；每轮收集结束后统一更新并广播新权重，不产生 stale rollout，也不丢弃
+过期事件。
+
+### 冻结与训练边界
+
+- [ ] 保持 Stage3 Transformer Encoder、Decoder、TimeModel 和旧约束模块冻结，
+  不再解冻尾层，避免破坏 V2-2 已验证有效的旧表征。
+- [ ] 继续训练约 `1.67M` 个 V2 参数：卫星/任务 edge projection、
+  `EventStateEncoder`、自回归联合 Actor 和 centralized Critic。Actor 包括
+  termination、idle、task value、owner marginal、commitment 和 prefix update；
+  Critic 学习事件状态价值。冻结骨干不等于只训练 loss，也不等于模型不再学习。
+- [ ] 启动前逐项记录总参数、可训练参数及其名称；训练后要求冻结参数逐值变化数为
+  `0`。
+
+### 大规模同步采样与训练
+
+- [ ] 在现有 V2-2 同步 PPO 基础上实现单一 policy 的多采样器同步轮次：最多使用
+  4 张 GPU、96–120 个 CPU Basilisk 环境；所有采样器完成固定 event chunk 后进入
+  barrier，learner 聚合完整 batch 后更新一次。
+- [ ] 固定 train scenes `205–324`，不访问 Test；从 V2-2 replica 0 只继承模型和
+  optimizer 的兼容状态，不继承旧 runtime、计数器或 RNG。
+- [ ] 第一轮保持 V2-2 已验证的 `clip_ratio=0.2`、`max_kl=0.03`、
+  `gamma=1.0`、time-aware GAE 和精确终点 Q 校正；不同时修改 reward、动作定义和
+  Transformer 解冻范围。
+- [ ] 至少运行 2 个独立 seed。资源不足时减少并行环境数，不把异步采样或放宽
+  policy-lag 作为替代。
+- [ ] 先完成合成同步 barrier 测试和单场 3,600 秒 smoke；只有 reward 重建误差、
+  behavior log-prob 重放误差、invalid action、冻结参数审计和 checkpoint 恢复全部
+  通过，才提交正式 120 场训练。
+
+### Checkpoint 与选择
+
+- [ ] 每 `100` 次 update 永久保存独立 checkpoint，禁止只覆盖
+  `checkpoint_latest.pth`；同时保存 optimizer/scheduler、AMP、RNG、policy version、
+  场景进度、事件数和物理秒数。
+- [ ] 只使用固定 train-heldout scenes `196–203` 对不同 seed 和周期 checkpoint
+  排序，选择指标仍为 `Q=0.6CR+0.2PCR+0.2WCR`；不得反复扫描官方 Val 选择训练轮次。
+- [ ] 将官方 Val Seen/Unseen scenes `0–7` 视为已经使用过的历史诊断集。新模型只在
+  checkpoint 锁定后使用尚未访问的 scenes `8–15` 做一次 8+8 gate。
+
+### 成功门槛与资源预算
+
+- [ ] 相对当前最佳 V2-2，新的 Val Seen/Unseen 8+8 必须同时满足：
+  `Q` 各提高至少 `0.005`，且任一 `CR/PCR/WCR` 不下降；否则停止 Val 64+64 和
+  Test，继续保留当前 V2-2 checkpoint。
+- [ ] 8+8 通过后才运行完整 Val Seen/Unseen；报告中把已用于历史诊断的 scenes
+  `0–7`、本轮 gate scenes `8–15` 和其余场景分开列出，避免把调参场景伪装成完全
+  未见验证。
+- [ ] 完整 Val 通过后只运行一次 Test；第一阶段仍以完成率 Q 为目标，TAT、功耗和
+  `CS_paper` 只记录，不参与 checkpoint 选择。
+- [ ] 正式训练使用 Slurm、BF16 和最多 48 小时预算；预计墙钟时间 `12–24` 小时。
+  达到场景完成、稳定性停止条件或 48 小时上限时原子保存可恢复 checkpoint。
