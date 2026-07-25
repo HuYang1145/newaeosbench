@@ -339,6 +339,15 @@ sum(event_reward) = Q_final
   Val 64+64，不运行 Test，保留 V2-2 replica 0 为当前最佳 checkpoint。日志：
   `work_dirs/eval_logs/event_v2_appo_val8_3170.log`；输出：
   `work_dirs/event_joint_transformer_v2/v2_3_val8/val_3170/`。
+- [x] 为排查最终小批量 update 是否单独损坏模型，使用唯一保留下来的早期
+  `checkpoint_latest.pth`（V2-3 update 800）在未访问官方 Val/Test 的固定
+  train-heldout scenes `196–203` 上完成诊断 job `3173`，用时 `00:28:11`。
+  相对 V2-2 replica 0，`Q 0.311805 -> 0.308587`，下降 `0.322` 个百分点；
+  `CR/PCR/WCR` 分别下降 `0.436/0.170/0.131` 个百分点。因此 update 800
+  仍未超过 V2-2，最终 update 832 不是唯一问题。update `100–700` 已被
+  `checkpoint_latest.pth` 覆盖，无法追溯，后续训练必须独立保留周期 checkpoint。
+  输出：
+  `work_dirs/event_joint_transformer_v2/v2_3_checkpoint_diagnostic/u800_3173/`。
 
 ## 资源边界
 
