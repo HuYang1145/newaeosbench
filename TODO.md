@@ -487,6 +487,10 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   排序，选择指标仍为 `Q=0.6CR+0.2PCR+0.2WCR`；不得反复扫描官方 Val 选择训练轮次。
 - [ ] 将官方 Val Seen/Unseen scenes `0–7` 视为已经使用过的历史诊断集。新模型只在
   checkpoint 锁定后使用尚未访问的 scenes `8–15` 做一次 8+8 gate。
+  - 已建立严格的 Slurm `afterok` 依赖链：full train job `3296` →
+    train-heldout checkpoint selection job `3306` → Val 8+8 gate job `3307` →
+    完整 Val job `3308` → 唯一一次 Test job `3309`。任一作业或门槛失败，后续作业
+    均不会启动。
 
 ### 成功门槛与资源预算
 
