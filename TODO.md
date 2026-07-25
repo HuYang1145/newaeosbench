@@ -500,7 +500,11 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   `CS_paper` 只记录，不参与 checkpoint 选择。
 - [ ] 正式训练使用 Slurm 和 BF16，同时运行 2 个独立 seed；每个 seed 使用 2 张
   GPU、60 个活跃 Basilisk 环境，合计 4 张 GPU、120 个活跃环境，整项任务申请的
-  CPU 核心总数不得超过 120。
+  CPU 核心总数不得超过 120。正式训练已提交为 Slurm job `3296`，申请
+  `4 GPU/120 CPU/240 GiB`、`TimeLimit=UNLIMITED`；日志为
+  `work_dirs/eval_logs/event_v2_large_sync_full_3296.log`，两个独立输出目录为
+  `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5408/` 和
+  `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。
 - [ ] 不设置人为训练时长上限；若 Slurm 分区存在单次作业时限，则在同步 barrier
   边界原子保存并自动从 checkpoint 续跑。每 `100` 次 update 永久保留一个恢复点，
   同时维护 `checkpoint_latest.pth`，但不得用 latest 覆盖周期 checkpoint。
