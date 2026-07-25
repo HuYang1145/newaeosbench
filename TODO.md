@@ -487,5 +487,9 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   未见验证。
 - [ ] 完整 Val 通过后只运行一次 Test；第一阶段仍以完成率 Q 为目标，TAT、功耗和
   `CS_paper` 只记录，不参与 checkpoint 选择。
-- [ ] 正式训练使用 Slurm、BF16 和最多 48 小时预算；预计墙钟时间 `12–24` 小时。
-  达到场景完成、稳定性停止条件或 48 小时上限时原子保存可恢复 checkpoint。
+- [ ] 正式训练使用 Slurm 和 BF16，同时运行 2 个独立 seed；每个 seed 使用 2 张
+  GPU、60 个活跃 Basilisk 环境，合计 4 张 GPU、120 个活跃环境，整项任务申请的
+  CPU 核心总数不得超过 120。
+- [ ] 不设置人为训练时长上限；若 Slurm 分区存在单次作业时限，则在同步 barrier
+  边界原子保存并自动从 checkpoint 续跑。每 `100` 次 update 永久保留一个恢复点，
+  同时维护 `checkpoint_latest.pth`，但不得用 latest 覆盖周期 checkpoint。
