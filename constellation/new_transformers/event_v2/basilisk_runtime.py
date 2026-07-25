@@ -396,6 +396,19 @@ class BasiliskSceneBackend:
         self._released_ids: tuple[int, ...] = ()
         self._closed_ids: tuple[int, ...] = ()
         self._action_events: list[tuple[int, tuple[int, ...]]] = []
+        self._completion_time = torch.full(
+            (len(taskset),),
+            float('inf'),
+            dtype=torch.float32,
+        )
+        self._working_time_steps = torch.zeros(
+            self.num_satellites,
+            dtype=torch.float32,
+        )
+        self._sensor_power = torch.tensor([
+            float(satellite.sensor.power)
+            for satellite in environment.get_constellation().sort()
+        ], dtype=torch.float32)
 
     @classmethod
     def from_scene_id(
@@ -483,10 +496,19 @@ class BasiliskSceneBackend:
         if self.done:
             raise RuntimeError('cannot advance a completed Basilisk scene')
         before = set(self._ongoing_ids())
+        self._working_time_steps += torch.tensor(
+            [task_id >= 0 for task_id in self._assignments],
+            dtype=torch.float32,
+        )
         self._environment.timer.step()
         self._environment.step()
         visibility = self._environment.is_visible(self._taskset)
         self._task_manager.record(visibility)
+        newly_succeeded = (
+            self._task_manager.succeeded_flags
+            & torch.isinf(self._completion_time)
+        )
+        self._completion_time[newly_succeeded] = float(self.time_step)
         self._max_progress = torch.maximum(
             self._max_progress,
             self._task_manager.progress.to(torch.float32),
@@ -502,6 +524,31 @@ class BasiliskSceneBackend:
             required_duration=self._taskset.durations.to(torch.float32),
             completed=self._task_manager.succeeded_flags.clone(),
         )
+
+    def operational_metrics(self) -> dict[str, float]:
+        """按论文评估单位返回成功任务 TAT 和传感器功耗。"""
+
+        succeeded = self._task_manager.succeeded_flags
+        if bool(succeeded.any()):
+            release_times = self._taskset.release_times.to(torch.float32)
+            tat_s = float(
+                (
+                    self._completion_time[succeeded]
+                    - release_times[succeeded]
+                ).mean().item()
+            )
+        else:
+            tat_s = float('inf')
+        pc_wh = float(
+            torch.sum(
+                self._working_time_steps * self._sensor_power,
+            ).item()
+            / 3600.0
+        )
+        return {
+            'TAT_s': tat_s,
+            'PC_Wh': pc_wh,
+        }
 
     def snapshot(self) -> RuntimeSnapshot:
         ongoing_flags = self._task_manager.ongoing_flags
@@ -617,6 +664,8 @@ class BasiliskSceneBackend:
             'action_events': tuple(self._action_events),
             'max_progress': completion.progress,
             'completed': completion.completed,
+            'completion_time': self._completion_time.clone(),
+            'working_time_steps': self._working_time_steps.clone(),
         }
 
     @classmethod
@@ -699,6 +748,34 @@ class BasiliskSceneBackend:
             expected_completed,
         ):
             raise ValueError('replayed Basilisk completion does not match checkpoint')
+        expected_completion_time = state_dict.get('completion_time')
+        if (
+            expected_completion_time is not None
+            and (
+                not isinstance(expected_completion_time, torch.Tensor)
+                or not torch.equal(
+                    backend._completion_time,
+                    expected_completion_time,
+                )
+            )
+        ):
+            raise ValueError(
+                'replayed Basilisk completion time does not match checkpoint',
+            )
+        expected_working_time = state_dict.get('working_time_steps')
+        if (
+            expected_working_time is not None
+            and (
+                not isinstance(expected_working_time, torch.Tensor)
+                or not torch.equal(
+                    backend._working_time_steps,
+                    expected_working_time,
+                )
+            )
+        ):
+            raise ValueError(
+                'replayed Basilisk power state does not match checkpoint',
+            )
         return backend
 
 

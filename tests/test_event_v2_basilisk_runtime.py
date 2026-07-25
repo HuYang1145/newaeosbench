@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -254,3 +255,23 @@ def test_real_runtime_state_round_trip_replays_physics_to_same_observation() -> 
             getattr(actual.event_state, field),
             getattr(expected.event_state, field),
         )
+
+
+def test_basilisk_backend_operational_metrics_match_tat_and_power_units() -> None:
+    backend = BasiliskSceneBackend.__new__(BasiliskSceneBackend)
+    backend._task_manager = SimpleNamespace(
+        succeeded_flags=torch.tensor([True, True, False]),
+    )
+    backend._taskset = SimpleNamespace(
+        release_times=torch.tensor([0.0, 10.0, 20.0]),
+    )
+    backend._completion_time = torch.tensor([10.0, 30.0, float('inf')])
+    backend._working_time_steps = torch.tensor([10.0, 5.0])
+    backend._sensor_power = torch.tensor([20.0, 40.0])
+
+    metrics = backend.operational_metrics()
+
+    assert metrics['TAT_s'] == pytest.approx(15.0)
+    assert metrics['PC_Wh'] == pytest.approx(
+        (10 * 20 + 5 * 40) / 3600,
+    )

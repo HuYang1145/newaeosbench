@@ -27,6 +27,9 @@ from constellation.new_transformers.event_v2.checkpoint import (
     load_appo_policy_checkpoint,
     load_sync_ppo_policy_checkpoint,
 )
+from constellation.new_transformers.event_v2.large_sync_checkpoint import (
+    load_large_sync_policy_checkpoint,
+)
 from constellation.new_transformers.event_v2.model import (
     EventJointActorCritic,
 )
@@ -74,6 +77,22 @@ def aggregate_scene_metrics(
         + 0.2 * means['PCR']
         + 0.2 * means['WCR']
     )
+    if all('TAT_s' in row and 'PC_Wh' in row for row in rows):
+        means['TAT_s'] = sum(
+            float(row['TAT_s']) for row in rows
+        ) / len(rows)
+        means['PC_Wh'] = sum(
+            float(row['PC_Wh']) for row in rows
+        ) / len(rows)
+        means['CS_paper'] = (
+            float('inf')
+            if means['Q'] <= 0
+            else (
+                1 / means['Q']
+                + means['TAT_s'] / 700
+                + means['PC_Wh'] / 100
+            )
+        )
     return means
 
 
@@ -130,8 +149,28 @@ def evaluate_runtime(
     metrics = completion_metrics(runtime.backend.completion_snapshot())
     if final_quality is None or abs(metrics['Q'] - final_quality) > 1e-6:
         raise RuntimeError('terminal quality does not match completion metrics')
+    operational_metrics = getattr(
+        runtime.backend,
+        'operational_metrics',
+        None,
+    )
+    if not callable(operational_metrics):
+        raise RuntimeError(
+            'evaluation backend does not expose operational metrics',
+        )
+    operational = dict(operational_metrics())
+    tat_s = float(operational['TAT_s'])
+    pc_wh = float(operational['PC_Wh'])
+    cs_paper = (
+        float('inf')
+        if metrics['Q'] <= 0
+        else 1 / metrics['Q'] + tat_s / 700 + pc_wh / 100
+    )
     return {
         **metrics,
+        'TAT_s': tat_s,
+        'PC_Wh': pc_wh,
+        'CS_paper': cs_paper,
         'events': events,
         'physical_seconds': physical_seconds,
     }
@@ -185,7 +224,8 @@ def load_policy_for_evaluation(
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
     if not isinstance(checkpoint, Mapping):
         raise ValueError('policy checkpoint root must be a mapping')
-    if checkpoint.get('stage') == 'V2-3':
+    stage = checkpoint.get('stage')
+    if stage == 'V2-3':
         model.unfreeze_last_layers(
             encoder_layers=1,
             decoder_layers=1,
@@ -196,6 +236,11 @@ def load_policy_for_evaluation(
             expected_encoder_layers=1,
             expected_decoder_layers=1,
             expected_backbone_lr_scale=0.1,
+        )
+    elif stage == 'V2-2-Large':
+        metadata = load_large_sync_policy_checkpoint(
+            path=path,
+            model=model,
         )
     else:
         metadata = load_sync_ppo_policy_checkpoint(
@@ -278,7 +323,12 @@ def main() -> None:
         'finite': all(
             torch.isfinite(torch.tensor(row[name]))
             for row in scene_rows
-            for name in METRIC_NAMES
+            for name in (
+                *METRIC_NAMES,
+                'TAT_s',
+                'PC_Wh',
+                'CS_paper',
+            )
         ),
         'reward_reconstruction_max_error': max(
             float(row['reward_reconstruction_error'])

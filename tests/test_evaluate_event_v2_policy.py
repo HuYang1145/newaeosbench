@@ -51,6 +51,33 @@ def test_aggregate_scene_metrics_use_macro_mean() -> None:
     })
 
 
+def test_aggregate_scene_metrics_reports_tat_power_and_paper_score() -> None:
+    aggregate = aggregate_scene_metrics([
+        {
+            'CR': 0.5,
+            'PCR': 0.75,
+            'WCR': 0.5,
+            'Q': 0.55,
+            'TAT_s': 100.0,
+            'PC_Wh': 2.0,
+        },
+        {
+            'CR': 1.0,
+            'PCR': 1.0,
+            'WCR': 1.0,
+            'Q': 1.0,
+            'TAT_s': 200.0,
+            'PC_Wh': 4.0,
+        },
+    ])
+
+    assert aggregate['TAT_s'] == pytest.approx(150.0)
+    assert aggregate['PC_Wh'] == pytest.approx(3.0)
+    assert aggregate['CS_paper'] == pytest.approx(
+        1 / 0.775 + 150 / 700 + 3 / 100,
+    )
+
+
 def test_evaluate_runtime_uses_deterministic_actor_and_one_trajectory() -> None:
     action = JointEventAction(
         terminate=torch.zeros(1, 1, dtype=torch.bool),
@@ -85,6 +112,12 @@ def test_evaluate_runtime_uses_deterministic_actor_and_one_trajectory() -> None:
     class FakeBackend:
         def completion_snapshot(self):
             return _completion()
+
+        def operational_metrics(self):
+            return {
+                'TAT_s': 100.0,
+                'PC_Wh': 2.0,
+            }
 
     class FakeRuntime:
         backend = FakeBackend()
@@ -126,6 +159,11 @@ def test_evaluate_runtime_uses_deterministic_actor_and_one_trajectory() -> None:
     assert result['physical_seconds'] == 5
     assert result['CR'] == pytest.approx(0.5)
     assert result['Q'] == pytest.approx(0.55)
+    assert result['TAT_s'] == pytest.approx(100.0)
+    assert result['PC_Wh'] == pytest.approx(2.0)
+    assert result['CS_paper'] == pytest.approx(
+        1 / 0.55 + 100 / 700 + 2 / 100,
+    )
 
 
 def test_v2_3_evaluation_unfreezes_tail_then_disables_all_gradients(
@@ -180,6 +218,50 @@ def test_v2_3_evaluation_unfreezes_tail_then_disables_all_gradients(
     assert calls == [
         ('unfreeze', 1, 1),
         ('load',),
+        ('requires_grad', False),
+        ('eval',),
+    ]
+
+
+def test_large_sync_evaluation_uses_large_checkpoint_loader(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    checkpoint = tmp_path / 'large_sync.pth'
+    torch.save({'stage': 'V2-2-Large'}, checkpoint)
+    calls = []
+
+    class FakeModel:
+        def requires_grad_(self, enabled):
+            calls.append(('requires_grad', enabled))
+            return self
+
+        def eval(self):
+            calls.append(('eval',))
+            return self
+
+    metadata = SimpleNamespace(stage='V2-2-Large')
+
+    def fake_loader(*, path, model):
+        assert path == checkpoint
+        assert isinstance(model, FakeModel)
+        calls.append(('load_large',))
+        return metadata
+
+    monkeypatch.setattr(
+        'tools.evaluate_event_v2_policy.'
+        'load_large_sync_policy_checkpoint',
+        fake_loader,
+    )
+
+    actual = load_policy_for_evaluation(
+        path=checkpoint,
+        model=FakeModel(),
+    )
+
+    assert actual is metadata
+    assert calls == [
+        ('load_large',),
         ('requires_grad', False),
         ('eval',),
     ]
