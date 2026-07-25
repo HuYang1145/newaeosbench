@@ -24,6 +24,7 @@ from constellation.new_transformers.event_v2.basilisk_runtime import (
     load_runtime_statistics,
 )
 from constellation.new_transformers.event_v2.checkpoint import (
+    load_appo_policy_checkpoint,
     load_sync_ppo_policy_checkpoint,
 )
 from constellation.new_transformers.event_v2.model import (
@@ -174,6 +175,39 @@ def _resolve_device(value: str) -> torch.device:
     return device
 
 
+def load_policy_for_evaluation(
+    *,
+    path: pathlib.Path,
+    model: EventJointActorCritic,
+):
+    """按 checkpoint 阶段只读加载 policy，并关闭所有评估梯度。"""
+
+    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError('policy checkpoint root must be a mapping')
+    if checkpoint.get('stage') == 'V2-3':
+        model.unfreeze_last_layers(
+            encoder_layers=1,
+            decoder_layers=1,
+        )
+        metadata = load_appo_policy_checkpoint(
+            path=path,
+            model=model,
+            expected_encoder_layers=1,
+            expected_decoder_layers=1,
+            expected_backbone_lr_scale=0.1,
+        )
+    else:
+        metadata = load_sync_ppo_policy_checkpoint(
+            path=path,
+            model=model,
+            expected_stages=('V2-1', 'V2-2'),
+        )
+    model.requires_grad_(False)
+    model.eval()
+    return metadata
+
+
 def main() -> None:
     args = parse_args()
     if len(set(args.scene_ids)) != len(args.scene_ids):
@@ -183,10 +217,9 @@ def main() -> None:
     config = _load_config(args.config)
     device = _resolve_device(args.device)
     model = EventJointActorCritic(**config['model']).to(device)
-    metadata = load_sync_ppo_policy_checkpoint(
+    metadata = load_policy_for_evaluation(
         path=args.checkpoint,
         model=model,
-        expected_stages=('V2-1', 'V2-2'),
     )
     amp_enabled = bool(config.get('amp', True) and device.type == 'cuda')
     amp_dtype = {

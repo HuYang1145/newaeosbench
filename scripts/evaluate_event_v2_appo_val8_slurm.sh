@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=aeos_event_v2_appo_val8
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=96G
+#SBATCH --time=04:00:00
+#SBATCH --account=lab_team
+#SBATCH --partition=local-10
+#SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_appo_val8_%j.log
+
+set -euo pipefail
+
+ROOT_DIR="${SLURM_SUBMIT_DIR:-/home/hy/data/newaeosbench}"
+PYTHON="/home/hy/miniconda3/envs/aeos/bin/python"
+CONFIG="${ROOT_DIR}/constellation/new_transformers/config_event_v2_appo.py"
+TRAINING_SUMMARY="${TRAINING_SUMMARY:-${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_3_appo/full_2229/summary.json}"
+BASELINE="${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_2_sync_ppo/replica_0/checkpoint_update_001046.pth"
+CANDIDATE="${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_3_appo/full_2229/checkpoint_update_000832.pth"
+OUTPUT_ROOT="${ROOT_DIR}/work_dirs/event_joint_transformer_v2/v2_3_val8/val_${SLURM_JOB_ID:-manual}"
+SCENE_IDS=($(seq 0 7))
+
+cd "${ROOT_DIR}"
+export PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}"
+export PYTHONPATH="${ROOT_DIR}"
+export MPLCONFIGDIR="/tmp/aeos_mpl"
+export XDG_CACHE_HOME="/tmp/aeos_cache"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+if [[ ! -f "${TRAINING_SUMMARY}" || ! -f "${BASELINE}" || ! -f "${CANDIDATE}" ]]; then
+  echo "[error] training summary or checkpoint is missing" >&2
+  exit 1
+fi
+TRAINING_ACCEPTED=$(
+  "${PYTHON}" - "${TRAINING_SUMMARY}" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1]))['accepted'])
+PY
+)
+if [[ "${TRAINING_ACCEPTED}" != "True" ]]; then
+  echo "[error] V2-3 full training was not accepted" >&2
+  exit 1
+fi
+
+free_gpu_indices=()
+while IFS=',' read -r gpu_index memory_used; do
+  gpu_index="${gpu_index// /}"
+  memory_used="${memory_used// /}"
+  if (( memory_used < 4096 )); then
+    free_gpu_indices+=("${gpu_index}")
+  fi
+done < <(
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits
+)
+if (( ${#free_gpu_indices[@]} < 3 )); then
+  echo "[error] APPO Val 8+8 needs three physically free GPUs" >&2
+  exit 1
+fi
+
+LABELS=(
+  "v2_2_val_seen"
+  "v2_3_val_seen"
+  "v2_2_val_unseen"
+  "v2_3_val_unseen"
+)
+SPLITS=("val_seen" "val_seen" "val_unseen" "val_unseen")
+CHECKPOINTS=(
+  "${BASELINE}"
+  "${CANDIDATE}"
+  "${BASELINE}"
+  "${CANDIDATE}"
+)
+GPU_ASSIGNMENTS=(
+  "${free_gpu_indices[0]}"
+  "${free_gpu_indices[1]}"
+  "${free_gpu_indices[2]}"
+  "${free_gpu_indices[0]}"
+)
+
+mkdir -p "${OUTPUT_ROOT}"
+pids=()
+for index in 0 1 2 3; do
+  label="${LABELS[$index]}"
+  split="${SPLITS[$index]}"
+  checkpoint="${CHECKPOINTS[$index]}"
+  gpu_index="${GPU_ASSIGNMENTS[$index]}"
+  output="${OUTPUT_ROOT}/${label}"
+  mkdir -p "${output}"
+  CUDA_VISIBLE_DEVICES="${gpu_index}" \
+    "${PYTHON}" tools/evaluate_event_v2_policy.py \
+      --config "${CONFIG}" \
+      --checkpoint "${checkpoint}" \
+      --label "${label}" \
+      --split "${split}" \
+      --scene-ids "${SCENE_IDS[@]}" \
+      --max-time-step 3600 \
+      --device cuda \
+      --output "${output}" \
+      >"${output}/evaluate.log" 2>&1 &
+  pids+=("$!")
+done
+
+status=0
+for pid in "${pids[@]}"; do
+  if ! wait "${pid}"; then
+    status=1
+  fi
+done
+if (( status != 0 )); then
+  exit "${status}"
+fi
+
+"${PYTHON}" tools/compare_event_v2_val_gate.py \
+  --baseline-seen "${OUTPUT_ROOT}/v2_2_val_seen/summary.json" \
+  --candidate-seen "${OUTPUT_ROOT}/v2_3_val_seen/summary.json" \
+  --baseline-unseen "${OUTPUT_ROOT}/v2_2_val_unseen/summary.json" \
+  --candidate-unseen "${OUTPUT_ROOT}/v2_3_val_unseen/summary.json" \
+  --expected-scene-ids "${SCENE_IDS[@]}" \
+  --minimum-q-improvement 0.005 \
+  --baseline-stage V2-2 \
+  --candidate-stage V2-3 \
+  --output "${OUTPUT_ROOT}/gate.json"

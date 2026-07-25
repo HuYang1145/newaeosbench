@@ -25,6 +25,7 @@ SELECTED_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_selected_slurm.sh'
 VAL_GATE_SCRIPT = ROOT / 'scripts/evaluate_event_v2_val8_gate_slurm.sh'
 APPO_SMOKE_SCRIPT = ROOT / 'scripts/smoke_event_v2_appo_slurm.sh'
 APPO_FULL_SCRIPT = ROOT / 'scripts/train_event_v2_appo_full_slurm.sh'
+APPO_VAL8_SCRIPT = ROOT / 'scripts/evaluate_event_v2_appo_val8_slurm.sh'
 
 
 def test_config_is_train_only_and_keeps_stage3_frozen() -> None:
@@ -364,3 +365,23 @@ def test_appo_full_uses_up_to_120_scenes_and_requires_passed_smoke() -> None:
     assert 'val_unseen' not in script.lower()
     assert '/test/' not in script.lower()
     assert os.access(APPO_FULL_SCRIPT, os.X_OK)
+
+
+def test_appo_val8_compares_v2_2_and_v2_3_on_both_splits() -> None:
+    script = APPO_VAL8_SCRIPT.read_text()
+
+    assert '#SBATCH --partition=local-10' in script
+    assert '#SBATCH --account=lab_team' in script
+    assert '#SBATCH --gres=gpu:4' in script
+    assert '/home/hy/miniconda3/envs/aeos/bin/python' in script
+    assert 'full_2229/summary.json' in script
+    assert "json.load(open(sys.argv[1]))['accepted']" in script
+    assert 'checkpoint_update_001046.pth' in script
+    assert 'checkpoint_update_000832.pth' in script
+    assert 'SPLITS=("val_seen" "val_seen" "val_unseen" "val_unseen")' in script
+    assert 'SCENE_IDS=($(seq 0 7))' in script
+    assert '--baseline-stage V2-2' in script
+    assert '--candidate-stage V2-3' in script
+    assert '--minimum-q-improvement 0.005' in script
+    assert '--split test' not in script.lower()
+    assert os.access(APPO_VAL8_SCRIPT, os.X_OK)

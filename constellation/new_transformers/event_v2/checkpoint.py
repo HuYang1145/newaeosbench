@@ -149,6 +149,18 @@ class SyncPPOPolicyMetadata:
 
 
 @dataclass(frozen=True)
+class APPOPolicyMetadata:
+    stage: str
+    updates: int
+    policy_version: int
+    scene_ids: tuple[int, ...]
+    config_fingerprint: str
+    encoder_layers: int
+    decoder_layers: int
+    backbone_lr_scale: float
+
+
+@dataclass(frozen=True)
 class APPORestore:
     counters: APPOCounters
     actor_scene_shards: tuple[tuple[int, ...], ...]
@@ -352,6 +364,63 @@ def load_appo_checkpoint(
         actor_runtime_states=runtime_states,
         pending_steps=pending_steps,
         normalizer=dict(normalizer),
+    )
+
+
+def load_appo_policy_checkpoint(
+    *,
+    path: str | pathlib.Path,
+    model: EventJointActorCritic,
+    expected_encoder_layers: int,
+    expected_decoder_layers: int,
+    expected_backbone_lr_scale: float,
+) -> APPOPolicyMetadata:
+    """只读加载 V2-3 policy，不恢复 optimizer、runtime 或 RNG。"""
+
+    checkpoint = torch.load(
+        pathlib.Path(path),
+        map_location='cpu',
+        weights_only=False,
+    )
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError('APPO policy checkpoint root must be a mapping')
+    if checkpoint.get('checkpoint_version') != APPO_CHECKPOINT_VERSION:
+        raise ValueError('APPO policy checkpoint version does not match')
+    if checkpoint.get('stage') != APPO_STAGE:
+        raise ValueError('APPO policy checkpoint stage does not match V2-3')
+    if checkpoint.get('transition_schema_fingerprint') != (
+        transition_schema_fingerprint()
+    ):
+        raise ValueError('APPO policy checkpoint schema fingerprint mismatch')
+    expected_unfreeze = {
+        'backbone_is_frozen': False,
+        'encoder_layers': expected_encoder_layers,
+        'decoder_layers': expected_decoder_layers,
+        'backbone_lr_scale': float(expected_backbone_lr_scale),
+    }
+    if checkpoint.get('unfreeze_state') != expected_unfreeze:
+        raise ValueError('APPO policy checkpoint unfreeze state does not match')
+    if model.backbone_is_frozen:
+        raise ValueError('APPO policy target must unfreeze Stage3 first')
+    fingerprint = checkpoint.get('config_fingerprint')
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        raise ValueError('APPO policy config fingerprint is invalid')
+    shards = _normalize_actor_scene_shards(
+        checkpoint.get('actor_scene_shards', ()),
+    )
+
+    model.load_state_dict(checkpoint['model'])
+    return APPOPolicyMetadata(
+        stage=APPO_STAGE,
+        updates=int(checkpoint.get('updates', -1)),
+        policy_version=int(checkpoint.get('policy_version', -1)),
+        scene_ids=tuple(
+            scene_id for shard in shards for scene_id in shard
+        ),
+        config_fingerprint=fingerprint,
+        encoder_layers=expected_encoder_layers,
+        decoder_layers=expected_decoder_layers,
+        backbone_lr_scale=float(expected_backbone_lr_scale),
     )
 
 

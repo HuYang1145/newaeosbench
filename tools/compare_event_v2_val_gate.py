@@ -66,6 +66,8 @@ def compare_val_gate(
     candidate_unseen: Mapping[str, Any],
     expected_scene_ids: Sequence[int],
     minimum_q_improvement: float = 0.005,
+    baseline_stage: str = 'V2-1',
+    candidate_stage: str = 'V2-2',
 ) -> dict[str, Any]:
     scene_ids = tuple(int(value) for value in expected_scene_ids)
     if len(scene_ids) != 8 or len(set(scene_ids)) != 8:
@@ -76,13 +78,13 @@ def compare_val_gate(
         'val_seen': (
             _validate(
                 baseline_seen,
-                stage='V2-1',
+                stage=baseline_stage,
                 split='val_seen',
                 scene_ids=scene_ids,
             ),
             _validate(
                 candidate_seen,
-                stage='V2-2',
+                stage=candidate_stage,
                 split='val_seen',
                 scene_ids=scene_ids,
             ),
@@ -90,13 +92,13 @@ def compare_val_gate(
         'val_unseen': (
             _validate(
                 baseline_unseen,
-                stage='V2-1',
+                stage=baseline_stage,
                 split='val_unseen',
                 scene_ids=scene_ids,
             ),
             _validate(
                 candidate_unseen,
-                stage='V2-2',
+                stage=candidate_stage,
                 split='val_unseen',
                 scene_ids=scene_ids,
             ),
@@ -131,6 +133,8 @@ def compare_val_gate(
             'deterministic': True,
             'minimum_q_improvement': minimum_q_improvement,
             'metrics_must_not_decrease': ['CR', 'PCR', 'WCR'],
+            'baseline_stage': baseline_stage,
+            'candidate_stage': candidate_stage,
         },
         'splits': split_results,
         'passed': all(row['passed'] for row in split_results.values()),
@@ -147,6 +151,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--candidate-unseen', type=pathlib.Path, required=True)
     parser.add_argument('--expected-scene-ids', type=int, nargs=8, required=True)
     parser.add_argument('--minimum-q-improvement', type=float, default=0.005)
+    parser.add_argument('--baseline-stage', default='V2-1')
+    parser.add_argument('--candidate-stage', default='V2-2')
     parser.add_argument('--output', type=pathlib.Path, required=True)
     return parser.parse_args()
 
@@ -167,6 +173,8 @@ def main() -> None:
         candidate_unseen=_load(args.candidate_unseen),
         expected_scene_ids=args.expected_scene_ids,
         minimum_q_improvement=args.minimum_q_improvement,
+        baseline_stage=args.baseline_stage,
+        candidate_stage=args.candidate_stage,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

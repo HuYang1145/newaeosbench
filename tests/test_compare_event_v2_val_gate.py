@@ -61,6 +61,34 @@ def test_val_gate_passes_only_when_both_splits_meet_registered_threshold() -> No
     assert result['splits']['val_unseen']['delta']['Q'] == pytest.approx(0.01)
 
 
+def test_val_gate_accepts_v2_2_to_v2_3_stage_pair() -> None:
+    result = compare_val_gate(
+        baseline_seen=_summary(
+            'baseline_seen', 'V2-2', 'val_seen',
+            cr=0.40, pcr=0.45, wcr=0.42,
+        ),
+        candidate_seen=_summary(
+            'candidate_seen', 'V2-3', 'val_seen',
+            cr=0.41, pcr=0.46, wcr=0.43,
+        ),
+        baseline_unseen=_summary(
+            'baseline_unseen', 'V2-2', 'val_unseen',
+            cr=0.30, pcr=0.35, wcr=0.32,
+        ),
+        candidate_unseen=_summary(
+            'candidate_unseen', 'V2-3', 'val_unseen',
+            cr=0.31, pcr=0.36, wcr=0.33,
+        ),
+        expected_scene_ids=SCENE_IDS,
+        baseline_stage='V2-2',
+        candidate_stage='V2-3',
+    )
+
+    assert result['protocol']['baseline_stage'] == 'V2-2'
+    assert result['protocol']['candidate_stage'] == 'V2-3'
+    assert result['passed'] is True
+
+
 def test_val_gate_rejects_metric_regression_even_when_q_improves() -> None:
     result = compare_val_gate(
         baseline_seen=_summary(

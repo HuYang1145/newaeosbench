@@ -12,6 +12,7 @@ from constellation.new_transformers.event_v2.checkpoint import (
     build_sync_ppo_checkpoint,
     config_fingerprint,
     load_appo_checkpoint,
+    load_appo_policy_checkpoint,
     load_sync_ppo_bootstrap_checkpoint,
     load_sync_ppo_checkpoint,
     load_sync_ppo_policy_checkpoint,
@@ -452,6 +453,54 @@ def test_appo_checkpoint_restores_training_and_actor_runtime_state(
     assert restored.pending_steps == ()
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, expected[name])
+
+
+def test_appo_policy_loader_only_restores_model_without_rng_or_runtime(
+    tmp_path,
+) -> None:
+    (
+        source_model,
+        _,
+        _,
+        _,
+        _,
+        checkpoint,
+        scene_shards,
+        _,
+    ) = _build_appo_test_checkpoint()
+    checkpoint['updates'] = 832
+    checkpoint['policy_version'] = 832
+    path = tmp_path / 'v2_3_policy.pth'
+    save_checkpoint_atomic(path, checkpoint)
+
+    target_model, _, _, _ = _appo_training_objects()
+    with torch.no_grad():
+        for parameter in target_model.parameters():
+            if parameter.requires_grad:
+                parameter.add_(1)
+    torch.manual_seed(999)
+    rng_before = torch.get_rng_state().clone()
+
+    metadata = load_appo_policy_checkpoint(
+        path=path,
+        model=target_model,
+        expected_encoder_layers=1,
+        expected_decoder_layers=1,
+        expected_backbone_lr_scale=0.1,
+    )
+
+    assert metadata.stage == 'V2-3'
+    assert metadata.updates == 832
+    assert metadata.policy_version == 832
+    assert metadata.scene_ids == tuple(
+        scene_id for shard in scene_shards for scene_id in shard
+    )
+    assert metadata.encoder_layers == 1
+    assert metadata.decoder_layers == 1
+    assert metadata.backbone_lr_scale == pytest.approx(0.1)
+    assert torch.equal(torch.get_rng_state(), rng_before)
+    for name, value in target_model.state_dict().items():
+        torch.testing.assert_close(value, source_model.state_dict()[name])
 
 
 @pytest.mark.parametrize(

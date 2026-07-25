@@ -14,6 +14,7 @@ from tools.evaluate_event_v2_policy import (
     aggregate_scene_metrics,
     completion_metrics,
     evaluate_runtime,
+    load_policy_for_evaluation,
 )
 
 
@@ -125,3 +126,60 @@ def test_evaluate_runtime_uses_deterministic_actor_and_one_trajectory() -> None:
     assert result['physical_seconds'] == 5
     assert result['CR'] == pytest.approx(0.5)
     assert result['Q'] == pytest.approx(0.55)
+
+
+def test_v2_3_evaluation_unfreezes_tail_then_disables_all_gradients(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    checkpoint = tmp_path / 'v2_3.pth'
+    torch.save({'stage': 'V2-3'}, checkpoint)
+    calls = []
+
+    class FakeModel:
+        def unfreeze_last_layers(self, *, encoder_layers, decoder_layers):
+            calls.append(('unfreeze', encoder_layers, decoder_layers))
+
+        def requires_grad_(self, enabled):
+            calls.append(('requires_grad', enabled))
+            return self
+
+        def eval(self):
+            calls.append(('eval',))
+            return self
+
+    metadata = SimpleNamespace(stage='V2-3')
+
+    def fake_loader(
+        *,
+        path,
+        model,
+        expected_encoder_layers,
+        expected_decoder_layers,
+        expected_backbone_lr_scale,
+    ):
+        assert path == checkpoint
+        assert isinstance(model, FakeModel)
+        assert expected_encoder_layers == 1
+        assert expected_decoder_layers == 1
+        assert expected_backbone_lr_scale == pytest.approx(0.1)
+        calls.append(('load',))
+        return metadata
+
+    monkeypatch.setattr(
+        'tools.evaluate_event_v2_policy.load_appo_policy_checkpoint',
+        fake_loader,
+    )
+
+    actual = load_policy_for_evaluation(
+        path=checkpoint,
+        model=FakeModel(),
+    )
+
+    assert actual is metadata
+    assert calls == [
+        ('unfreeze', 1, 1),
+        ('load',),
+        ('requires_grad', False),
+        ('eval',),
+    ]
