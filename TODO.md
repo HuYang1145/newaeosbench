@@ -463,14 +463,18 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   Transformer 解冻范围。
 - [ ] 至少运行 2 个独立 seed。资源不足时减少并行环境数，不把异步采样或放宽
   policy-lag 作为替代。
-- [ ] 先完成合成同步 barrier 测试和单场 3,600 秒 smoke；只有 reward 重建误差、
+- [x] 先完成合成同步 barrier 测试和单场 3,600 秒 smoke；只有 reward 重建误差、
   behavior log-prob 重放误差、invalid action、冻结参数审计和 checkpoint 恢复全部
   通过，才提交正式 120 场训练。
   - 2026-07-25：合成 preflight 已通过，`accepted=true`、2 updates、16 events、
     stale rollout 为 `0`，reward/log-prob 最大误差均为 `0`，冻结参数变化数为
     `0`；输出位于
     `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/preflight_65b970b/`。
-  - 真实 3,600 秒 smoke 已提交 Slurm job `3254`；日志为
+  - 真实 3,600 秒 smoke 为 Slurm job `3254`，已 `COMPLETED 0:0`，用时
+    `00:19:09`。第一阶段在 update 1 原子保存后，第二阶段从同一 checkpoint 精确
+    续跑；最终完成 scene 205，共 26 updates、1,711 events、3,523 个计入 reward
+    的物理秒，`accepted=true`、stale rollout 为 `0`、reward/log-prob 最大误差均
+    为 `0`、冻结参数变化数为 `0`，数值全部有限。日志为
     `work_dirs/eval_logs/event_v2_large_sync_smoke_3254.log`，输出目录为
     `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/smoke_3254/`。
 
