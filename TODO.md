@@ -442,23 +442,23 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
 
 ### 冻结与训练边界
 
-- [ ] 保持 Stage3 Transformer Encoder、Decoder、TimeModel 和旧约束模块冻结，
+- [x] 保持 Stage3 Transformer Encoder、Decoder、TimeModel 和旧约束模块冻结，
   不再解冻尾层，避免破坏 V2-2 已验证有效的旧表征。
-- [ ] 继续训练约 `1.67M` 个 V2 参数：卫星/任务 edge projection、
+- [x] 继续训练约 `1.67M` 个 V2 参数：卫星/任务 edge projection、
   `EventStateEncoder`、自回归联合 Actor 和 centralized Critic。Actor 包括
   termination、idle、task value、owner marginal、commitment 和 prefix update；
   Critic 学习事件状态价值。冻结骨干不等于只训练 loss，也不等于模型不再学习。
-- [ ] 启动前逐项记录总参数、可训练参数及其名称；训练后要求冻结参数逐值变化数为
+- [x] 启动前逐项记录总参数、可训练参数及其名称；训练后要求冻结参数逐值变化数为
   `0`。
 
 ### 大规模同步采样与训练
 
-- [ ] 在现有 V2-2 同步 PPO 基础上实现单一 policy 的多采样器同步轮次：最多使用
+- [x] 在现有 V2-2 同步 PPO 基础上实现单一 policy 的多采样器同步轮次：最多使用
   4 张 GPU、96–120 个 CPU Basilisk 环境；所有采样器完成固定 event chunk 后进入
   barrier，learner 聚合完整 batch 后更新一次。
-- [ ] 固定 train scenes `205–324`，不访问 Test；从 V2-2 replica 0 只继承模型和
+- [x] 固定 train scenes `205–324`，不访问 Test；从 V2-2 replica 0 只继承模型和
   optimizer 的兼容状态，不继承旧 runtime、计数器或 RNG。
-- [ ] 第一轮保持 V2-2 已验证的 `clip_ratio=0.2`、`max_kl=0.03`、
+- [x] 第一轮保持 V2-2 已验证的 `clip_ratio=0.2`、`max_kl=0.03`、
   `gamma=1.0`、time-aware GAE 和精确终点 Q 校正；不同时修改 reward、动作定义和
   Transformer 解冻范围。
 - [ ] 至少运行 2 个独立 seed。资源不足时减少并行环境数，不把异步采样或放宽
@@ -466,10 +466,17 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
 - [ ] 先完成合成同步 barrier 测试和单场 3,600 秒 smoke；只有 reward 重建误差、
   behavior log-prob 重放误差、invalid action、冻结参数审计和 checkpoint 恢复全部
   通过，才提交正式 120 场训练。
+  - 2026-07-25：合成 preflight 已通过，`accepted=true`、2 updates、16 events、
+    stale rollout 为 `0`，reward/log-prob 最大误差均为 `0`，冻结参数变化数为
+    `0`；输出位于
+    `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/preflight_65b970b/`。
+  - 真实 3,600 秒 smoke 已提交 Slurm job `3254`；日志为
+    `work_dirs/eval_logs/event_v2_large_sync_smoke_3254.log`，输出目录为
+    `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/smoke_3254/`。
 
 ### Checkpoint 与选择
 
-- [ ] 每 `100` 次 update 永久保存独立 checkpoint，禁止只覆盖
+- [x] 每 `100` 次 update 永久保存独立 checkpoint，禁止只覆盖
   `checkpoint_latest.pth`；同时保存 optimizer/scheduler、AMP、RNG、policy version、
   场景进度、事件数和物理秒数。
 - [ ] 只使用固定 train-heldout scenes `196–203` 对不同 seed 和周期 checkpoint
