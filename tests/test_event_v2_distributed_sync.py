@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import queue
+import threading
 
 import pytest
 import torch
 
+from constellation.new_transformers.event_v2.appo import SharedPolicyStore
 from constellation.new_transformers.event_v2.distributed_sync import (
+    QueuedEventRuntimePool,
     StrictSyncRoundCoordinator,
     SyncActorChunk,
+    SyncActorDone,
     SyncRoundCommand,
     SyncWorkerError,
+    run_strict_sync_actor_loop,
     validate_and_merge_sync_round,
+)
+from tools.train_event_v2_sync_ppo import (
+    SyntheticEventRuntime,
+    _tiny_model,
 )
 
 
@@ -207,4 +217,232 @@ def test_sync_worker_error_requires_complete_context() -> None:
             error_type='RuntimeError',
             message='',
             traceback='Traceback',
+        )
+
+
+def _runtime_factory(
+    created_scene_ids: list[int],
+    *,
+    num_events: int,
+):
+    def factory(scene_id: int) -> SyntheticEventRuntime:
+        created_scene_ids.append(scene_id)
+        return SyntheticEventRuntime(num_events=num_events)
+
+    return factory
+
+
+def _synthetic_runtime_loader(
+    scene_id: int,
+    state: dict,
+) -> SyntheticEventRuntime:
+    del scene_id
+    runtime = SyntheticEventRuntime(num_events=int(state['num_events']))
+    runtime.events = int(state['events'])
+    runtime.total_reward = float(state['total_reward'])
+    return runtime
+
+
+def test_runtime_pool_caps_active_scenes_and_refills_its_own_queue() -> None:
+    created: list[int] = []
+    pool = QueuedEventRuntimePool(
+        assigned_scene_ids=tuple(range(205, 215)),
+        max_active_environments=5,
+        runtime_factory=_runtime_factory(created, num_events=1),
+        runtime_state_loader=_synthetic_runtime_loader,
+    )
+
+    payload = pool.collect(
+        model=_tiny_model(),
+        policy_version=0,
+        max_events=8,
+        device=torch.device('cpu'),
+        replay_atol=1e-6,
+    )
+
+    assert len(payload.steps) == 8
+    assert payload.completed_scene_ids == tuple(range(205, 213))
+    assert pool.active_environment_count == 2
+    assert pool.pending_scene_ids == ()
+    assert pool.completed_scene_ids == tuple(range(205, 213))
+    assert created == list(range(205, 215))
+    assert {
+        step.environment_index for step in payload.steps
+    } == set(range(205, 213))
+
+    final = pool.collect(
+        model=_tiny_model(),
+        policy_version=0,
+        max_events=8,
+        device=torch.device('cpu'),
+        replay_atol=1e-6,
+    )
+
+    assert len(final.steps) == 2
+    assert final.completed_scene_ids == (213, 214)
+    assert pool.is_complete is True
+    assert pool.active_environment_count == 0
+    assert pool.completed_scene_ids == tuple(range(205, 215))
+    assert len(set(pool.completed_scene_ids)) == 10
+
+
+def test_runtime_pool_state_restores_active_pending_and_completed_scenes() -> None:
+    created: list[int] = []
+    pool = QueuedEventRuntimePool(
+        assigned_scene_ids=(205, 206, 207, 208),
+        max_active_environments=2,
+        runtime_factory=_runtime_factory(created, num_events=2),
+        runtime_state_loader=_synthetic_runtime_loader,
+    )
+    first = pool.collect(
+        model=_tiny_model(),
+        policy_version=3,
+        max_events=3,
+        device=torch.device('cpu'),
+        replay_atol=1e-6,
+    )
+    state = pool.state_dict()
+    restored = QueuedEventRuntimePool(
+        assigned_scene_ids=(205, 206, 207, 208),
+        max_active_environments=2,
+        runtime_factory=_runtime_factory([], num_events=2),
+        runtime_state_loader=_synthetic_runtime_loader,
+        initialize=False,
+    )
+
+    restored.load_state_dict(state)
+
+    assert len(first.steps) == 3
+    assert restored.state_dict() == state
+    assert restored.active_environment_count <= 2
+    assert (
+        set(restored.pending_scene_ids)
+        | set(restored.active_scene_ids)
+        | set(restored.completed_scene_ids)
+    ) == {205, 206, 207, 208}
+
+
+def test_runtime_pool_rejects_behavior_replay_mismatch(monkeypatch) -> None:
+    pool = QueuedEventRuntimePool(
+        assigned_scene_ids=(205,),
+        max_active_environments=1,
+        runtime_factory=lambda _: SyntheticEventRuntime(num_events=2),
+        runtime_state_loader=_synthetic_runtime_loader,
+    )
+
+    def mismatched_replay(*args, **kwargs):
+        del args, kwargs
+        return torch.tensor([10.0])
+
+    monkeypatch.setattr(
+        'constellation.new_transformers.event_v2.distributed_sync.'
+        'replay_rollout_log_probs',
+        mismatched_replay,
+    )
+
+    with pytest.raises(RuntimeError, match='replay mismatch'):
+        pool.collect(
+            model=_tiny_model(),
+            policy_version=0,
+            max_events=1,
+            device=torch.device('cpu'),
+            replay_atol=1e-6,
+        )
+
+
+def test_actor_loop_waits_for_exact_round_commands_and_done_ack() -> None:
+    context = torch.multiprocessing.get_context('spawn')
+    store = SharedPolicyStore(
+        _tiny_model(),
+        context=context,
+        initial_version=0,
+    )
+    pool = QueuedEventRuntimePool(
+        assigned_scene_ids=(205,),
+        max_active_environments=1,
+        runtime_factory=lambda _: SyntheticEventRuntime(num_events=2),
+        runtime_state_loader=_synthetic_runtime_loader,
+    )
+    commands: queue.Queue = queue.Queue()
+    results: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=run_strict_sync_actor_loop,
+        kwargs={
+            'model': _tiny_model(),
+            'pool': pool,
+            'actor_id': 0,
+            'policy_store': store,
+            'command_queue': commands,
+            'result_queue': results,
+            'stop_event': stop,
+            'target_events': 1,
+            'device': torch.device('cpu'),
+            'replay_atol': 1e-6,
+            'initial_round_id': 0,
+        },
+    )
+    worker.start()
+
+    with pytest.raises(queue.Empty):
+        results.get(timeout=0.1)
+    commands.put(SyncRoundCommand(round_id=0, policy_version=0))
+    first = results.get(timeout=3)
+    assert isinstance(first, SyncActorChunk)
+    assert first.round_id == 0
+    assert first.policy_version == 0
+    assert first.state['rng']['torch'] is not None
+    with pytest.raises(queue.Empty):
+        results.get(timeout=0.1)
+
+    source = _tiny_model()
+    with torch.no_grad():
+        next(source.parameters()).add_(0.25)
+    store.publish(source, version=1)
+    commands.put(SyncRoundCommand(round_id=1, policy_version=1))
+    second = results.get(timeout=3)
+    done = results.get(timeout=3)
+
+    assert isinstance(second, SyncActorChunk)
+    assert second.round_id == 1
+    assert second.policy_version == 1
+    assert isinstance(done, SyncActorDone)
+    assert done.completed_scene_ids == (205,)
+    assert worker.is_alive()
+    stop.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+def test_actor_loop_rejects_skipped_or_unpublished_versions() -> None:
+    context = torch.multiprocessing.get_context('spawn')
+    store = SharedPolicyStore(
+        _tiny_model(),
+        context=context,
+        initial_version=0,
+    )
+    pool = QueuedEventRuntimePool(
+        assigned_scene_ids=(205,),
+        max_active_environments=1,
+        runtime_factory=lambda _: SyntheticEventRuntime(num_events=2),
+        runtime_state_loader=_synthetic_runtime_loader,
+    )
+    commands: queue.Queue = queue.Queue()
+    results: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    commands.put(SyncRoundCommand(round_id=1, policy_version=1))
+
+    with pytest.raises(RuntimeError, match='round'):
+        run_strict_sync_actor_loop(
+            model=_tiny_model(),
+            pool=pool,
+            actor_id=0,
+            policy_store=store,
+            command_queue=commands,
+            result_queue=results,
+            stop_event=stop,
+            target_events=1,
+            device=torch.device('cpu'),
+            replay_atol=1e-6,
+            initial_round_id=0,
         )

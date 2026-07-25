@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections import deque
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 import math
+import queue
+import random
 from typing import Any
 
-from .rollout import StoredEventStep
+import numpy as np
+import torch
+
+from .model import EventJointActorCritic
+from .rollout import (
+    EventRuntime,
+    StoredEventStep,
+    SynchronousRuntimeSlot,
+    collect_synchronous_rollout,
+    replay_rollout_log_probs,
+)
 
 
 @dataclass(frozen=True)
@@ -60,12 +73,15 @@ class SyncActorDone:
     """actor 已完成其全部 scene 并停在可恢复边界。"""
 
     actor_id: int
+    round_id: int
+    policy_version: int
     completed_scene_ids: tuple[int, ...]
+    reward_reconstruction_errors: tuple[tuple[int, float], ...]
     state: Mapping[str, Any]
 
     def __post_init__(self) -> None:
-        if self.actor_id < 0:
-            raise ValueError('sync done actor ID is invalid')
+        if min(self.actor_id, self.round_id, self.policy_version) < 0:
+            raise ValueError('sync done actor identifiers are invalid')
         if (
             not self.completed_scene_ids
             or len(self.completed_scene_ids)
@@ -73,6 +89,17 @@ class SyncActorDone:
             or any(scene_id < 0 for scene_id in self.completed_scene_ids)
         ):
             raise ValueError('sync done scene IDs are invalid')
+        reward_scene_ids = tuple(
+            scene_id for scene_id, _ in self.reward_reconstruction_errors
+        )
+        if (
+            reward_scene_ids != self.completed_scene_ids
+            or any(
+                not math.isfinite(error) or error < 0
+                for _, error in self.reward_reconstruction_errors
+            )
+        ):
+            raise ValueError('sync done reward reconstruction audit is invalid')
         if not isinstance(self.state, Mapping):
             raise ValueError('sync done actor state must be a mapping')
 
@@ -110,6 +137,15 @@ class SyncRoundBatch:
     processed_physical_seconds: float
     replay_max_abs_error: float
     should_update: bool
+
+
+@dataclass(frozen=True)
+class QueuedRolloutPayload:
+    """一个 actor pool 在单轮内采集并重放后的事件。"""
+
+    steps: tuple[StoredEventStep, ...]
+    completed_scene_ids: tuple[int, ...]
+    replay_max_abs_error: float
 
 
 def validate_and_merge_sync_round(
@@ -293,3 +329,415 @@ class StrictSyncRoundCoordinator:
         self._policy_version = next_policy_version
         self._chunks.clear()
         self._finalized = None
+
+
+def capture_rng_state() -> dict[str, Any]:
+    """捕获 actor 断点续训需要的所有随机数状态。"""
+
+    return {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch': torch.get_rng_state().clone(),
+        'cuda': (
+            tuple(state.clone() for state in torch.cuda.get_rng_state_all())
+            if torch.cuda.is_available()
+            else ()
+        ),
+    }
+
+
+def restore_rng_state(state: Mapping[str, Any]) -> None:
+    """恢复由 :func:`capture_rng_state` 保存的随机数状态。"""
+
+    required = {'python', 'numpy', 'torch', 'cuda'}
+    if set(state) != required:
+        raise ValueError('sync RNG state schema does not match')
+    random.setstate(state['python'])
+    np.random.set_state(state['numpy'])
+    torch_state = state['torch']
+    if not isinstance(torch_state, torch.Tensor):
+        raise ValueError('sync Torch RNG state is invalid')
+    torch.set_rng_state(torch_state.cpu())
+    cuda_states = state['cuda']
+    if cuda_states:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                'CUDA RNG state cannot be restored without CUDA',
+            )
+        torch.cuda.set_rng_state_all(
+            [value.cpu() for value in cuda_states],
+        )
+
+
+class QueuedEventRuntimePool:
+    """为一个 actor 维护有上限的活动环境和确定性 scene 队列。"""
+
+    STATE_VERSION = 1
+
+    def __init__(
+        self,
+        *,
+        assigned_scene_ids: Sequence[int],
+        max_active_environments: int,
+        runtime_factory: Callable[[int], EventRuntime],
+        runtime_state_loader: Callable[
+            [int, Mapping[str, Any]],
+            EventRuntime,
+        ],
+        initialize: bool = True,
+    ) -> None:
+        assigned = tuple(int(scene_id) for scene_id in assigned_scene_ids)
+        if (
+            not assigned
+            or len(assigned) != len(set(assigned))
+            or any(scene_id < 0 for scene_id in assigned)
+        ):
+            raise ValueError('queued runtime assigned scene IDs are invalid')
+        if not 1 <= max_active_environments <= len(assigned):
+            raise ValueError('queued runtime active environment cap is invalid')
+        self._assigned_scene_ids = assigned
+        self._max_active_environments = int(max_active_environments)
+        self._runtime_factory = runtime_factory
+        self._runtime_state_loader = runtime_state_loader
+        self._pending_scene_ids = deque(assigned)
+        self._active: dict[int, SynchronousRuntimeSlot] = {}
+        self._completed_scene_ids: list[int] = []
+        self._reward_reconstruction_errors: dict[int, float] = {}
+        if initialize:
+            self._fill_active_environments()
+
+    @property
+    def assigned_scene_ids(self) -> tuple[int, ...]:
+        return self._assigned_scene_ids
+
+    @property
+    def active_environment_count(self) -> int:
+        return len(self._active)
+
+    @property
+    def active_scene_ids(self) -> tuple[int, ...]:
+        return tuple(self._active)
+
+    @property
+    def pending_scene_ids(self) -> tuple[int, ...]:
+        return tuple(self._pending_scene_ids)
+
+    @property
+    def completed_scene_ids(self) -> tuple[int, ...]:
+        return tuple(self._completed_scene_ids)
+
+    @property
+    def reward_reconstruction_errors(
+        self,
+    ) -> tuple[tuple[int, float], ...]:
+        return tuple(
+            (scene_id, self._reward_reconstruction_errors[scene_id])
+            for scene_id in self._completed_scene_ids
+        )
+
+    @property
+    def is_complete(self) -> bool:
+        return (
+            not self._pending_scene_ids
+            and not self._active
+            and tuple(sorted(self._completed_scene_ids))
+            == tuple(sorted(self._assigned_scene_ids))
+        )
+
+    def _fill_active_environments(self) -> None:
+        while (
+            self._pending_scene_ids
+            and len(self._active) < self._max_active_environments
+        ):
+            scene_id = self._pending_scene_ids.popleft()
+            runtime = self._runtime_factory(scene_id)
+            observation = runtime.reset()
+            slot = SynchronousRuntimeSlot(
+                environment_index=scene_id,
+                episode_id=0,
+                observation=observation,
+                runtime=runtime,
+            )
+            self._active[scene_id] = slot
+
+    @staticmethod
+    def _runtime_state(runtime: EventRuntime) -> Mapping[str, Any]:
+        state_dict = getattr(runtime, 'state_dict', None)
+        if not callable(state_dict):
+            raise TypeError(
+                'queued event runtime must support state_dict()',
+            )
+        state = state_dict()
+        if not isinstance(state, Mapping):
+            raise TypeError('queued event runtime state must be a mapping')
+        return state
+
+    @staticmethod
+    def _reward_reconstruction_error(runtime: EventRuntime) -> float:
+        try:
+            error = float(
+                getattr(runtime, 'reward_reconstruction_error'),
+            )
+        except (AttributeError, RuntimeError):
+            total_reward = getattr(runtime, 'total_reward', None)
+            final_quality = getattr(runtime, 'final_quality', None)
+            if total_reward is None or final_quality is None:
+                raise RuntimeError(
+                    'finished runtime lacks reward reconstruction audit',
+                )
+            error = abs(float(total_reward) - float(final_quality))
+        if not math.isfinite(error) or error < 0:
+            raise RuntimeError(
+                'runtime reward reconstruction error is invalid',
+            )
+        return error
+
+    def _retire_finished_environments(self) -> tuple[int, ...]:
+        completed = []
+        for scene_id, slot in tuple(self._active.items()):
+            if not slot.finished:
+                continue
+            self._reward_reconstruction_errors[scene_id] = (
+                self._reward_reconstruction_error(slot.runtime)
+            )
+            self._completed_scene_ids.append(scene_id)
+            completed.append(scene_id)
+            del self._active[scene_id]
+        self._fill_active_environments()
+        return tuple(completed)
+
+    def collect(
+        self,
+        *,
+        model: EventJointActorCritic,
+        policy_version: int,
+        max_events: int,
+        device: torch.device,
+        replay_atol: float,
+        amp_enabled: bool = False,
+        amp_dtype: torch.dtype = torch.bfloat16,
+    ) -> QueuedRolloutPayload:
+        """以一个固定 policy version 收集并重放本 actor 的一轮。"""
+
+        if self.is_complete:
+            raise ValueError('queued runtime pool has already completed')
+        if max_events <= 0 or replay_atol < 0:
+            raise ValueError('queued rollout boundaries are invalid')
+        steps: list[StoredEventStep] = []
+        completed_scene_ids: list[int] = []
+        while len(steps) < max_events and self._active:
+            collected = collect_synchronous_rollout(
+                model,
+                tuple(self._active.values()),
+                target_events=max_events - len(steps),
+                policy_version=policy_version,
+                device=device,
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+            )
+            if not collected:
+                raise RuntimeError(
+                    'queued event collector made no progress',
+                )
+            steps.extend(collected)
+            completed_scene_ids.extend(
+                self._retire_finished_environments(),
+            )
+        replay = replay_rollout_log_probs(
+            model,
+            steps,
+            device=device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
+        behavior = torch.stack([
+            step.behavior_log_prob for step in steps
+        ])
+        replay_max_abs_error = float((replay - behavior).abs().max())
+        if replay_max_abs_error > replay_atol:
+            raise RuntimeError(
+                'strict sync actor behavior log-prob replay mismatch: '
+                f'{replay_max_abs_error:.8g}',
+            )
+        return QueuedRolloutPayload(
+            steps=tuple(steps),
+            completed_scene_ids=tuple(completed_scene_ids),
+            replay_max_abs_error=replay_max_abs_error,
+        )
+
+    def state_dict(self) -> dict[str, Any]:
+        """仅在 actor 到达 barrier 后调用。"""
+
+        active = []
+        for scene_id, slot in self._active.items():
+            active.append({
+                'scene_id': scene_id,
+                'environment_index': slot.environment_index,
+                'episode_id': slot.episode_id,
+                'event_index': slot.event_index,
+                'finished': slot.finished,
+                'observation': slot.observation,
+                'runtime': dict(self._runtime_state(slot.runtime)),
+            })
+        return {
+            'version': self.STATE_VERSION,
+            'assigned_scene_ids': self._assigned_scene_ids,
+            'max_active_environments': self._max_active_environments,
+            'pending_scene_ids': tuple(self._pending_scene_ids),
+            'active': tuple(active),
+            'completed_scene_ids': tuple(self._completed_scene_ids),
+            'reward_reconstruction_errors': (
+                self.reward_reconstruction_errors
+            ),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        """从严格 barrier 保存的状态恢复所有活动环境。"""
+
+        if state.get('version') != self.STATE_VERSION:
+            raise ValueError('queued runtime pool state version does not match')
+        if tuple(state.get('assigned_scene_ids', ())) != (
+            self._assigned_scene_ids
+        ):
+            raise ValueError('queued runtime scene assignment does not match')
+        if int(state.get('max_active_environments', -1)) != (
+            self._max_active_environments
+        ):
+            raise ValueError('queued runtime active environment cap changed')
+        pending = tuple(int(value) for value in state['pending_scene_ids'])
+        completed = tuple(
+            int(value) for value in state['completed_scene_ids']
+        )
+        active_states = tuple(state['active'])
+        if len(active_states) > self._max_active_environments:
+            raise ValueError('queued runtime state exceeds its active cap')
+        active_scene_ids = tuple(
+            int(value['scene_id']) for value in active_states
+        )
+        combined = pending + active_scene_ids + completed
+        if (
+            len(combined) != len(set(combined))
+            or set(combined) != set(self._assigned_scene_ids)
+        ):
+            raise ValueError('queued runtime scene partition is invalid')
+        reward_errors = {
+            int(scene_id): float(error)
+            for scene_id, error in state['reward_reconstruction_errors']
+        }
+        if set(reward_errors) != set(completed):
+            raise ValueError(
+                'queued runtime reward audit does not match completed scenes',
+            )
+        self._pending_scene_ids = deque(pending)
+        self._completed_scene_ids = list(completed)
+        self._reward_reconstruction_errors = reward_errors
+        self._active.clear()
+        for slot_state in active_states:
+            scene_id = int(slot_state['scene_id'])
+            runtime_state = slot_state['runtime']
+            if not isinstance(runtime_state, Mapping):
+                raise ValueError('queued runtime checkpoint is invalid')
+            runtime = self._runtime_state_loader(
+                scene_id,
+                runtime_state,
+            )
+            slot = SynchronousRuntimeSlot(
+                environment_index=int(slot_state['environment_index']),
+                episode_id=int(slot_state['episode_id']),
+                event_index=int(slot_state['event_index']),
+                observation=slot_state['observation'],
+                runtime=runtime,
+                finished=bool(slot_state['finished']),
+            )
+            self._active[scene_id] = slot
+
+
+def run_strict_sync_actor_loop(
+    *,
+    model: EventJointActorCritic,
+    pool: QueuedEventRuntimePool,
+    actor_id: int,
+    policy_store: Any,
+    command_queue: Any,
+    result_queue: Any,
+    stop_event: Any,
+    target_events: int,
+    device: torch.device,
+    replay_atol: float,
+    initial_round_id: int,
+    amp_enabled: bool = False,
+    amp_dtype: torch.dtype = torch.bfloat16,
+) -> None:
+    """只按 learner 命令运行，并在每个 chunk 后停在 barrier。"""
+
+    if actor_id < 0 or initial_round_id < 0:
+        raise ValueError('strict sync actor loop identifiers are invalid')
+    if target_events <= 0 or replay_atol < 0:
+        raise ValueError('strict sync actor loop boundaries are invalid')
+    model.to(device)
+    model.eval()
+    expected_round_id = initial_round_id
+    loaded_policy_version = -1
+    while not stop_event.is_set():
+        try:
+            command = command_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if not isinstance(command, SyncRoundCommand):
+            raise TypeError('strict sync actor received an unknown command')
+        if command.stop:
+            return
+        if command.round_id != expected_round_id:
+            raise RuntimeError(
+                'strict sync actor received an out-of-order round: '
+                f'expected {expected_round_id}, got {command.round_id}',
+            )
+        refresh = policy_store.refresh(
+            model,
+            last_version=loaded_policy_version,
+        )
+        loaded_policy_version = refresh.version
+        if loaded_policy_version != command.policy_version:
+            raise RuntimeError(
+                'strict sync actor policy store version does not match '
+                f'round command: store={loaded_policy_version}, '
+                f'command={command.policy_version}',
+            )
+        payload = pool.collect(
+            model=model,
+            policy_version=loaded_policy_version,
+            max_events=target_events,
+            device=device,
+            replay_atol=replay_atol,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
+        actor_state = {
+            'pool': pool.state_dict(),
+            'rng': capture_rng_state(),
+        }
+        result_queue.put(SyncActorChunk(
+            actor_id=actor_id,
+            round_id=command.round_id,
+            policy_version=command.policy_version,
+            steps=payload.steps,
+            completed_scene_ids=payload.completed_scene_ids,
+            replay_max_abs_error=payload.replay_max_abs_error,
+            state=actor_state,
+        ))
+        expected_round_id += 1
+        if not pool.is_complete:
+            continue
+        result_queue.put(SyncActorDone(
+            actor_id=actor_id,
+            round_id=command.round_id,
+            policy_version=command.policy_version,
+            completed_scene_ids=pool.completed_scene_ids,
+            reward_reconstruction_errors=(
+                pool.reward_reconstruction_errors
+            ),
+            state=actor_state,
+        ))
+        while not stop_event.is_set():
+            stop_event.wait(0.1)
+        return
