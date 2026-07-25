@@ -321,11 +321,24 @@ sum(event_reward) = Q_final
   用时 `00:07:46`、`accepted=true`：14 updates、1,671 accepted events、
   96 stale events 被按预注册上限丢弃，reward 重建误差 `0`、actor log-prob
   重放误差 `0`、冻结参数变化 `0`、checkpoint 第一动作可复现。
-- [ ] 正式 V2-3 job `2229` 已自动提交并运行：固定 train scenes `205–324`、
-  最多 120 个环境、当前 3 张物理空闲 GPU、120 CPU、200 GiB、上限 28 小时；
-  learner 与 actor 异步运行。日志：
+- [x] 正式 V2-3 job `2229` 已 `COMPLETED 0:0`，用时 `07:29:34`：
+  固定 train scenes `205–324` 共 120 场全部完成，832 updates、
+  106,422 accepted events、57,026 stale events 按 `max_policy_lag=2` 丢弃；
+  `accepted=true`、reward 重建最大误差 `<5e-10`、actor log-prob 重放误差 `0`、
+  冻结参数变化 `0`、checkpoint 第一动作可复现。最终 checkpoint：
+  `work_dirs/event_joint_transformer_v2/v2_3_appo/full_2229/checkpoint_update_000832.pth`。
+  日志：
   `work_dirs/eval_logs/event_v2_appo_full_2229.log`；输出：
   `work_dirs/event_joint_transformer_v2/v2_3_appo/full_2229/`。
+- [x] V2-2 与 V2-3 的同场景 Val Seen/Unseen 8+8 对照 job `3170` 已完成；
+  比较脚本因 `passed=false` 按设计返回退出码 `2`，不是仿真或加载故障。
+  Val Seen 的 `Q 0.433100 -> 0.402062`，下降 `3.104` 个百分点，
+  `CR/PCR/WCR` 分别下降 `3.083/3.015/3.255` 个百分点；Val Unseen 的
+  `Q 0.292165 -> 0.288264`，下降 `0.390` 个百分点，`CR/PCR/WCR`
+  分别下降 `0.233/1.102/0.150` 个百分点。两个 split 均未通过门槛，因此停止
+  Val 64+64，不运行 Test，保留 V2-2 replica 0 为当前最佳 checkpoint。日志：
+  `work_dirs/eval_logs/event_v2_appo_val8_3170.log`；输出：
+  `work_dirs/event_joint_transformer_v2/v2_3_val8/val_3170/`。
 
 ## 资源边界
 
