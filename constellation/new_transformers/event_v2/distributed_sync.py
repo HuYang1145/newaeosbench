@@ -29,11 +29,14 @@ class SyncRoundCommand:
 
     round_id: int
     policy_version: int
+    target_events: int | None = None
     stop: bool = False
 
     def __post_init__(self) -> None:
         if self.round_id < 0 or self.policy_version < 0:
             raise ValueError('sync round command identifiers are invalid')
+        if self.target_events is not None and self.target_events <= 0:
+            raise ValueError('sync round target events must be positive')
 
 
 @dataclass(frozen=True)
@@ -273,6 +276,10 @@ class StrictSyncRoundCoordinator:
     @property
     def policy_version(self) -> int:
         return self._policy_version
+
+    @property
+    def submitted_actor_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._chunks))
 
     def command_for(self, actor_id: int) -> SyncRoundCommand:
         if actor_id not in self._actor_ids:
@@ -706,7 +713,11 @@ def run_strict_sync_actor_loop(
         payload = pool.collect(
             model=model,
             policy_version=loaded_policy_version,
-            max_events=target_events,
+            max_events=(
+                target_events
+                if command.target_events is None
+                else command.target_events
+            ),
             device=device,
             replay_atol=replay_atol,
             amp_enabled=amp_enabled,
