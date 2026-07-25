@@ -744,7 +744,6 @@ def _training_fingerprint(
     actor_count: int,
     active_environments: int,
     max_time_step: int,
-    max_updates: int,
 ) -> str:
     names = (
         'stage',
@@ -769,6 +768,7 @@ def _training_fingerprint(
         'amp_dtype',
         'model',
         'optimizer',
+        'max_updates',
     )
     effective = {name: config[name] for name in names}
     effective.update({
@@ -777,7 +777,6 @@ def _training_fingerprint(
         'actor_count': actor_count,
         'active_environments': active_environments,
         'max_time_step': max_time_step,
-        'max_updates': max_updates,
     })
     return config_fingerprint(effective)
 
@@ -831,7 +830,7 @@ def run_real_training(
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=max(max_updates, 1),
+        T_max=max(int(config['max_updates']), 1),
         eta_min=float(config['optimizer']['lr']) * 0.1,
     )
     scaler = torch.amp.GradScaler(
@@ -846,7 +845,6 @@ def run_real_training(
         actor_count=actor_count,
         active_environments=active_environments,
         max_time_step=max_time_step,
-        max_updates=max_updates,
     )
     counters = LargeSyncCounters()
     actor_states: dict[int, Mapping[str, Any]] = {}
