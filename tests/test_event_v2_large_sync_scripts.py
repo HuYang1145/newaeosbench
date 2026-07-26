@@ -167,12 +167,27 @@ def test_large_sync_shell_wrappers_are_syntactically_valid() -> None:
         assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    'script_path',
+    (HELDOUT, VAL_GATE, FULL_VAL, TEST_ONCE),
+)
+def test_large_sync_evaluations_share_server_resources(
+    script_path: pathlib.Path,
+) -> None:
+    script = script_path.read_text()
+
+    assert '#SBATCH --gres=gpu:2' in script
+    assert '#SBATCH --cpus-per-task=72' in script
+    assert '#SBATCH --mem=70G' in script
+    assert '#SBATCH --gres=gpu:4' not in script
+
+
 def test_large_sync_heldout_evaluates_every_permanent_checkpoint_only_on_train(
 ) -> None:
     script = HELDOUT.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --time=' not in script
     assert 'seed_5408' in script
     assert 'seed_5409' in script
@@ -186,6 +201,9 @@ def test_large_sync_heldout_evaluates_every_permanent_checkpoint_only_on_train(
     assert 'select_event_v2_large_sync_heldout.py' in script
     assert '--expected-scene-ids "${SCENE_IDS[@]}"' in script
     assert '--best-link "${BEST_LINK}"' in script
+    assert 'gpu_index=$(( index % 2 ))' in script
+    assert 'if (( ${#pids[@]} == 2 )); then' in script
+    assert 'index % 4' not in script
     assert 'val_seen' not in script.lower()
     assert 'val_unseen' not in script.lower()
     assert '--split test' not in script.lower()
@@ -196,7 +214,7 @@ def test_large_sync_val_gate_uses_only_new_scenes_8_to_15_once() -> None:
     script = VAL_GATE.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --time=' not in script
     assert ': "${SELECTION_JSON:?' in script
     assert "['selected']['checkpoint']" in script
@@ -209,6 +227,9 @@ def test_large_sync_val_gate_uses_only_new_scenes_8_to_15_once() -> None:
     assert '--baseline-stage V2-2' in script
     assert '--candidate-stage V2-2-Large' in script
     assert '--expected-scene-ids "${SCENE_IDS[@]}"' in script
+    assert 'gpu_index=$(( index % 2 ))' in script
+    assert 'if (( ${#pids[@]} == 2 )); then' in script
+    assert 'index % 4' not in script
     assert '--split test' not in script.lower()
     assert os.access(VAL_GATE, os.X_OK)
 
@@ -217,7 +238,7 @@ def test_large_sync_full_val_reports_three_preregistered_scene_groups() -> None:
     script = FULL_VAL.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --time=' not in script
     assert ': "${SELECTION_JSON:?' in script
     assert ': "${GATE_JSON:?' in script
@@ -234,6 +255,9 @@ def test_large_sync_full_val_reports_three_preregistered_scene_groups() -> None:
     assert 'TAT_s' in script
     assert 'PC_Wh' in script
     assert 'CS_paper' in script
+    assert 'gpu_index=$(( task_index % 2 ))' in script
+    assert 'if (( ${#pids[@]} == 2 )); then' in script
+    assert 'task_index % 4' not in script
     assert '--split test' not in script.lower()
     assert os.access(FULL_VAL, os.X_OK)
 
@@ -243,7 +267,7 @@ def test_large_sync_test_runs_locked_candidate_once_after_full_val_passes(
     script = TEST_ONCE.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
+    assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --time=' not in script
     assert ': "${SELECTION_JSON:?' in script
     assert ': "${FULL_VAL_RESULT:?' in script
@@ -255,4 +279,7 @@ def test_large_sync_test_runs_locked_candidate_once_after_full_val_passes(
     assert 'merge_event_v2_eval_summaries.py' in script
     assert '--expected-scene-ids "${ALL_SCENE_IDS[@]}"' in script
     assert 'checkpoint_update_001046.pth' not in script
+    assert 'gpu_index=$(( shard_index % 2 ))' in script
+    assert 'if (( ${#pids[@]} == 2 )); then' in script
+    assert 'CUDA_VISIBLE_DEVICES="${shard_index}"' not in script
     assert os.access(TEST_ONCE, os.X_OK)

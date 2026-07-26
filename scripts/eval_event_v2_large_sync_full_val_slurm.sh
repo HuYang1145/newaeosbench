@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_large_full_val
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=120
-#SBATCH --mem=220G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=70G
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_full_val_%j.log
@@ -89,7 +89,7 @@ for model_index in 0 1; do
       scene_ids=($(seq "${start}" "${end}"))
       label="${MODEL_LABELS[$model_index]}_${split}_${group}"
       output_path="${OUTPUT}/shards/${label}.json"
-      gpu_index=$(( task_index % 4 ))
+      gpu_index=$(( task_index % 2 ))
       CUDA_VISIBLE_DEVICES="${gpu_index}" \
         "${PYTHON}" tools/evaluate_event_v2_policy.py \
           --config "${MODEL_CONFIGS[$model_index]}" \
@@ -103,7 +103,7 @@ for model_index in 0 1; do
           >"${OUTPUT}/shards/${label}.log" 2>&1 &
       pids+=("$!")
       task_index=$(( task_index + 1 ))
-      if (( ${#pids[@]} == 4 )); then
+      if (( ${#pids[@]} == 2 )); then
         wait_batch
       fi
     done

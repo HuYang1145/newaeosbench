@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_large_test_once
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=120
-#SBATCH --mem=220G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=70G
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_test_once_%j.log
@@ -61,13 +61,28 @@ fi
 mkdir -p "${OUTPUT}/shards"
 pids=()
 inputs=()
+wait_batch() {
+  local status=0
+  local pid
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      status=1
+    fi
+  done
+  pids=()
+  if (( status != 0 )); then
+    return 1
+  fi
+}
+
 for shard_index in 0 1 2 3; do
   start="${SHARD_STARTS[$shard_index]}"
   end="${SHARD_ENDS[$shard_index]}"
   scene_ids=($(seq "${start}" "${end}"))
   shard_output="${OUTPUT}/shards/shard_${shard_index}.json"
   inputs+=("${shard_output}")
-  CUDA_VISIBLE_DEVICES="${shard_index}" \
+  gpu_index=$(( shard_index % 2 ))
+  CUDA_VISIBLE_DEVICES="${gpu_index}" \
     "${PYTHON}" tools/evaluate_event_v2_policy.py \
       --config "${CONFIG}" \
       --checkpoint "${CANDIDATE_CHECKPOINT}" \
@@ -79,16 +94,12 @@ for shard_index in 0 1 2 3; do
       --output "${shard_output}" \
       >"${OUTPUT}/shards/shard_${shard_index}.log" 2>&1 &
   pids+=("$!")
-done
-
-status=0
-for pid in "${pids[@]}"; do
-  if ! wait "${pid}"; then
-    status=1
+  if (( ${#pids[@]} == 2 )); then
+    wait_batch
   fi
 done
-if (( status != 0 )); then
-  exit "${status}"
+if (( ${#pids[@]} > 0 )); then
+  wait_batch
 fi
 
 "${PYTHON}" tools/merge_event_v2_eval_summaries.py \

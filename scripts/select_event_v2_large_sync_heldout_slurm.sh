@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_large_heldout
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=96
-#SBATCH --mem=200G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=70G
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_heldout_%j.log
@@ -98,7 +98,7 @@ for index in "${!CHECKPOINTS[@]}"; do
   label="seed_${seed}_${checkpoint_stem#checkpoint_}"
   candidate_dir="${OUTPUT}/candidates/${label}"
   candidate_summary="${candidate_dir}/summary.json"
-  gpu_index=$(( index % 4 ))
+  gpu_index=$(( index % 2 ))
   mkdir -p "${candidate_dir}"
   candidate_summaries+=("${candidate_summary}")
 
@@ -114,7 +114,7 @@ for index in "${!CHECKPOINTS[@]}"; do
       --output "${candidate_summary}" \
       >"${OUTPUT}/logs/${label}.log" 2>&1 &
   pids+=("$!")
-  if (( ${#pids[@]} == 4 )); then
+  if (( ${#pids[@]} == 2 )); then
     wait_batch
   fi
 done

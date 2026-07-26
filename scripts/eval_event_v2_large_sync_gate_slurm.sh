@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_large_gate
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=96
-#SBATCH --mem=200G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=70G
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_gate_%j.log
@@ -71,10 +71,25 @@ CHECKPOINTS=(
 
 mkdir -p "${OUTPUT}"
 pids=()
+wait_batch() {
+  local status=0
+  local pid
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      status=1
+    fi
+  done
+  pids=()
+  if (( status != 0 )); then
+    return 1
+  fi
+}
+
 for index in 0 1 2 3; do
   split="${SPLITS[$index]}"
   label="${LABELS[$index]}"
-  CUDA_VISIBLE_DEVICES="${index}" \
+  gpu_index=$(( index % 2 ))
+  CUDA_VISIBLE_DEVICES="${gpu_index}" \
     "${PYTHON}" tools/evaluate_event_v2_policy.py \
       --config "${CONFIGS[$index]}" \
       --checkpoint "${CHECKPOINTS[$index]}" \
@@ -86,16 +101,12 @@ for index in 0 1 2 3; do
       --output "${OUTPUT}/${label}.json" \
       >"${OUTPUT}/${label}.log" 2>&1 &
   pids+=("$!")
-done
-
-status=0
-for pid in "${pids[@]}"; do
-  if ! wait "${pid}"; then
-    status=1
+  if (( ${#pids[@]} == 2 )); then
+    wait_batch
   fi
 done
-if (( status != 0 )); then
-  exit "${status}"
+if (( ${#pids[@]} > 0 )); then
+  wait_batch
 fi
 
 "${PYTHON}" tools/compare_event_v2_val_gate.py \
