@@ -87,8 +87,13 @@ def test_large_sync_formal_jobs_share_server_resources(
     assert '#SBATCH --cpus-per-task=72' in script
     assert '#SBATCH --mem=70G' in script
     assert '#SBATCH --gres=gpu:4' not in script
-    assert '#SBATCH --time=' not in script
+    assert '#SBATCH --time=06:00:00' in script
+    assert '#SBATCH --signal=B:USR1@300' in script
     assert '--cpus-per-task=144' not in script
+    assert 'checkpoint_before_timeout()' in script
+    assert 'trap checkpoint_before_timeout USR1' in script
+    assert 'kill -USR1 "${pid}"' in script
+    assert 'exit 75' in script
 
 
 def test_large_sync_full_uses_two_seeds_and_one_gpu_per_seed() -> None:
@@ -129,7 +134,8 @@ def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
     assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --cpus-per-task=72' in script
     assert '#SBATCH --mem=70G' in script
-    assert '#SBATCH --time=' not in script
+    assert '#SBATCH --time=06:00:00' in script
+    assert '#SBATCH --signal=B:USR1@300' in script
     assert 'seed_5408/checkpoint_latest.pth' in script
     assert 'seed_5409/checkpoint_latest.pth' in script
     assert '--resume "${resume_checkpoint}"' in script

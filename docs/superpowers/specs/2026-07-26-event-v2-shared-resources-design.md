@@ -23,7 +23,8 @@
 - 最多申请 `2 GPU`；
 - 最多申请 `72 CPU`，即 server-10 的 144 个逻辑 CPU 的一半；
 - 申请 `70 GiB` 内存；
-- 不设置训练时长上限；
+- 单次训练作业时限为 6 小时；结束前 5 分钟通知主训练进程在同步 barrier 保存
+  checkpoint，后续可从 latest 精确续训；
 - 不直接在登录节点运行正式训练或评估。
 
 ## 训练映射
@@ -46,6 +47,8 @@
 - 从现有 `checkpoint_latest.pth` 精确恢复，不重新初始化或覆盖已完成进度。
 - 每 100 updates 永久保存一个周期 checkpoint，并继续维护 latest 链接。
 - 正常暂停或信号退出只在同步 barrier 保存最终 checkpoint。
+- 6 小时训练作业使用 batch-shell 信号转发，只通知两个主训练进程，不直接终止 actor；
+  预留 5 分钟完成 barrier checkpoint。
 - 若 70 GiB 内存不足导致 Slurm 强制终止，禁止从头重训；从最近永久 checkpoint 恢复，
   同时记录实际 `MaxRSS`，再由用户决定是否增加内存。
 

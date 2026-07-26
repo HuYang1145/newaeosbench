@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Resume both V2-2-Large seeds from their barrier checkpoints while limiting every formal training and downstream evaluation job to 2 GPU, 72 CPU, and 70 GiB.
+**Goal:** Resume both V2-2-Large seeds from their barrier checkpoints in safe six-hour training chunks while limiting every formal training and downstream evaluation job to 2 GPU, 72 CPU, and 70 GiB.
 
 **Architecture:** Preserve the checkpoint fingerprint by keeping 12 actors, 60 active environments, scene assignments, and PPO settings unchanged. Map each seed's learner and all actors onto one allocated GPU, then serialize evaluation work into batches of two so every downstream job remains valid with only two allocated GPUs.
 
@@ -87,6 +87,8 @@ Use these directives in both formal training scripts:
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=72
 #SBATCH --mem=70G
+#SBATCH --time=06:00:00
+#SBATCH --signal=B:USR1@300
 ```
 
 Keep the smoke CPU count at 32, but reduce its memory directive to `#SBATCH --mem=70G`.
@@ -116,6 +118,28 @@ CUDA_VISIBLE_DEVICES="${GPU_A}" \
 ```
 
 Repeat for seed `5409` with `CUDA_VISIBLE_DEVICES="${GPU_B}"`. Do not change PPO arguments, scenes, checkpoint interval, or resume paths.
+
+After `pids=()` is initialized, install a batch-shell signal handler that forwards
+`USR1` only to the two main learner processes, waits for their barrier checkpoint,
+and exits nonzero so `afterok` validation cannot run on an incomplete training chunk:
+
+```bash
+checkpoint_before_timeout() {
+  trap - USR1
+  echo "[info] time limit approaching; requesting barrier checkpoints" >&2
+  local pid
+  for pid in "${pids[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -USR1 "${pid}"
+    fi
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || true
+  done
+  exit 75
+}
+trap checkpoint_before_timeout USR1
+```
 
 - [ ] **Step 3: Run focused tests and verify GREEN**
 
@@ -299,7 +323,7 @@ git commit -m "docs: record shared-resource Event V2 resume"
 sbatch scripts/resume_event_v2_large_sync_ppo_full_slurm.sh
 ```
 
-Record the returned job ID and verify with `scontrol show job` that it requests exactly `2 GPU`, `72 CPU`, `70G`, and unlimited time.
+Record the returned job ID and verify with `scontrol show job` that it requests exactly `2 GPU`, `72 CPU`, `70G`, and `06:00:00`.
 
 - [ ] **Step 2: Rebuild the `afterok` chain**
 

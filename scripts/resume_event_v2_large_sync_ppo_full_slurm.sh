@@ -4,6 +4,8 @@
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=72
 #SBATCH --mem=70G
+#SBATCH --time=06:00:00
+#SBATCH --signal=B:USR1@300
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_sync_resume_%j.log
@@ -54,6 +56,22 @@ PY
 }
 
 pids=()
+checkpoint_before_timeout() {
+  trap - USR1
+  echo "[info] time limit approaching; requesting barrier checkpoints" >&2
+  local pid
+  for pid in "${pids[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -USR1 "${pid}"
+    fi
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}" 2>/dev/null || true
+  done
+  exit 75
+}
+trap checkpoint_before_timeout USR1
+
 labels=()
 if ! is_accepted "${OUTPUT_A}/summary.json"; then
   resume_checkpoint="${LATEST_A}"
