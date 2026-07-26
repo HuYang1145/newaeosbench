@@ -492,7 +492,9 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
     train-heldout checkpoint selection job `3306` → Val 8+8 gate job `3307` →
     完整 Val job `3308` → 唯一一次 Test job `3309`。任一作业或门槛失败，后续作业
     均不会启动。2026-07-26 按共享资源要求安全暂停 job `3296` 后，旧依赖 jobs
-    `3306–3309` 已取消；续训提交时必须按相同门槛重建新依赖链。
+    `3306–3309` 已取消。新的共享资源链为 resume job `3532` → train-heldout job
+    `3533` → Val 8+8 gate job `3534` → 完整 Val job `3535` → 唯一一次 Test job
+    `3536`；全部作业均申请 `2 GPU/72 CPU/70 GiB` 并继续使用严格 `afterok`。
 
 ### 成功门槛与资源预算
 
@@ -513,7 +515,9 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   `resumable=true`，checkpoint 已验证包含模型、optimizer 和 actor 状态。日志为
   `work_dirs/eval_logs/event_v2_large_sync_full_3296.log`，两个独立输出目录为
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5408/` 和
-  `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。
+  `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。共享资源续训
+  已提交为 job `3532`，`TimeLimit=UNLIMITED`；日志为
+  `work_dirs/eval_logs/event_v2_large_sync_resume_3532.log`。
 - [ ] 不设置人为训练时长上限；若 Slurm 分区存在单次作业时限，则在同步 barrier
   边界原子保存并自动从 checkpoint 续跑。每 `100` 次 update 永久保留一个恢复点，
   同时维护 `checkpoint_latest.pth`，但不得用 latest 覆盖周期 checkpoint。
