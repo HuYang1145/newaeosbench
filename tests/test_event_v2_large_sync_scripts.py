@@ -4,6 +4,8 @@ import os
 import pathlib
 import subprocess
 
+import pytest
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SMOKE = ROOT / 'scripts/smoke_event_v2_large_sync_ppo_slurm.sh'
@@ -53,6 +55,7 @@ def test_large_sync_smoke_runs_one_real_3600_scene_and_exact_resume() -> None:
     assert '#SBATCH --account=lab_team' in script
     assert '#SBATCH --gres=gpu:2' in script
     assert '#SBATCH --cpus-per-task=32' in script
+    assert '#SBATCH --mem=70G' in script
     assert '#SBATCH --time=' not in script
     assert 'config_event_v2_large_sync_ppo.py' in script
     assert 'checkpoint_update_001046.pth' in script
@@ -72,25 +75,36 @@ def test_large_sync_smoke_runs_one_real_3600_scene_and_exact_resume() -> None:
     assert os.access(SMOKE, os.X_OK)
 
 
-def test_large_sync_full_uses_two_seeds_four_gpus_and_at_most_120_cpus(
+@pytest.mark.parametrize('script_path', (FULL, RESUME))
+def test_large_sync_formal_jobs_share_server_resources(
+    script_path: pathlib.Path,
 ) -> None:
-    script = FULL.read_text()
+    script = script_path.read_text()
 
     assert '#SBATCH --partition=local-10' in script
     assert '#SBATCH --account=lab_team' in script
-    assert '#SBATCH --gres=gpu:4' in script
-    assert '#SBATCH --cpus-per-task=120' in script
+    assert '#SBATCH --gres=gpu:2' in script
+    assert '#SBATCH --cpus-per-task=72' in script
+    assert '#SBATCH --mem=70G' in script
+    assert '#SBATCH --gres=gpu:4' not in script
     assert '#SBATCH --time=' not in script
     assert '--cpus-per-task=144' not in script
+
+
+def test_large_sync_full_uses_two_seeds_and_one_gpu_per_seed() -> None:
+    script = FULL.read_text()
+
     assert 'config_event_v2_large_sync_ppo.py' in script
     assert 'checkpoint_update_001046.pth' in script
     assert ': "${SMOKE_SUMMARY:?' in script
     assert "summary['accepted'] is True" in script
     assert 'SEEDS=(5408 5409)' in script
-    assert 'GPU_PAIR_A=' in script
-    assert 'GPU_PAIR_B=' in script
-    assert 'CUDA_VISIBLE_DEVICES="${GPU_PAIR_A}"' in script
-    assert 'CUDA_VISIBLE_DEVICES="${GPU_PAIR_B}"' in script
+    assert 'GPU_A="${ALLOCATED_GPUS[0]}"' in script
+    assert 'GPU_B="${ALLOCATED_GPUS[1]}"' in script
+    assert 'CUDA_VISIBLE_DEVICES="${GPU_A}"' in script
+    assert 'CUDA_VISIBLE_DEVICES="${GPU_B}"' in script
+    assert script.count('--learner-device cuda:0') == 2
+    assert script.count('--actor-devices cuda:0') == 2
     assert '--actors 12' in script
     assert '--active-environments 60' in script
     assert '--scene-start 205' in script
@@ -112,8 +126,9 @@ def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
     script = RESUME.read_text()
 
     assert '#SBATCH --partition=local-10' in script
-    assert '#SBATCH --gres=gpu:4' in script
-    assert '#SBATCH --cpus-per-task=120' in script
+    assert '#SBATCH --gres=gpu:2' in script
+    assert '#SBATCH --cpus-per-task=72' in script
+    assert '#SBATCH --mem=70G' in script
     assert '#SBATCH --time=' not in script
     assert 'seed_5408/checkpoint_latest.pth' in script
     assert 'seed_5409/checkpoint_latest.pth' in script
@@ -121,8 +136,14 @@ def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
     assert '--max-updates 100000' in script
     assert '--checkpoint-every-updates 100' in script
     assert "summary.get('accepted') is True" in script
-    assert 'CUDA_VISIBLE_DEVICES="${GPU_PAIR_A}"' in script
-    assert 'CUDA_VISIBLE_DEVICES="${GPU_PAIR_B}"' in script
+    assert 'GPU_A="${ALLOCATED_GPUS[0]}"' in script
+    assert 'GPU_B="${ALLOCATED_GPUS[1]}"' in script
+    assert 'CUDA_VISIBLE_DEVICES="${GPU_A}"' in script
+    assert 'CUDA_VISIBLE_DEVICES="${GPU_B}"' in script
+    assert script.count('--learner-device cuda:0') == 2
+    assert script.count('--actor-devices cuda:0') == 2
+    assert '--actors 12' in script
+    assert '--active-environments 60' in script
     assert os.access(RESUME, os.X_OK)
 
 
