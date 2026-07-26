@@ -453,9 +453,10 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
 
 ### 大规模同步采样与训练
 
-- [x] 在现有 V2-2 同步 PPO 基础上实现单一 policy 的多采样器同步轮次：最多使用
-  4 张 GPU、96–120 个 CPU Basilisk 环境；所有采样器完成固定 event chunk 后进入
-  barrier，learner 聚合完整 batch 后更新一次。
+- [x] 在现有 V2-2 同步 PPO 基础上实现单一 policy 的多采样器同步轮次。当前共享
+  资源配置使用 2 张 GPU、72 个 CPU 和 70 GiB 内存；两个 seed 各自保持 60 个活跃
+  Basilisk 环境。所有采样器完成固定 event chunk 后进入 barrier，learner 聚合完整
+  batch 后更新一次。
 - [x] 固定 train scenes `205–324`，不访问 Test；从 V2-2 replica 0 只继承模型和
   optimizer 的兼容状态，不继承旧 runtime、计数器或 RNG。
 - [x] 第一轮保持 V2-2 已验证的 `clip_ratio=0.2`、`max_kl=0.03`、
@@ -490,7 +491,8 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   - 已建立严格的 Slurm `afterok` 依赖链：full train job `3296` →
     train-heldout checkpoint selection job `3306` → Val 8+8 gate job `3307` →
     完整 Val job `3308` → 唯一一次 Test job `3309`。任一作业或门槛失败，后续作业
-    均不会启动。
+    均不会启动。2026-07-26 按共享资源要求安全暂停 job `3296` 后，旧依赖 jobs
+    `3306–3309` 已取消；续训提交时必须按相同门槛重建新依赖链。
 
 ### 成功门槛与资源预算
 
@@ -502,10 +504,13 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   未见验证。
 - [ ] 完整 Val 通过后只运行一次 Test；第一阶段仍以完成率 Q 为目标，TAT、功耗和
   `CS_paper` 只记录，不参与 checkpoint 选择。
-- [ ] 正式训练使用 Slurm 和 BF16，同时运行 2 个独立 seed；每个 seed 使用 2 张
-  GPU、60 个活跃 Basilisk 环境，合计 4 张 GPU、120 个活跃环境，整项任务申请的
-  CPU 核心总数不得超过 120。正式训练已提交为 Slurm job `3296`，申请
-  `4 GPU/120 CPU/240 GiB`、`TimeLimit=UNLIMITED`；日志为
+- [ ] 正式训练使用 Slurm 和 BF16，同时运行 2 个独立 seed；每个 seed 使用 1 张
+  GPU、12 个 actor 和 60 个活跃 Basilisk 环境，合计申请
+  `2 GPU/72 CPU/70 GiB`，剩余 2 张 GPU 留给其他用户。首次正式训练 job `3296`
+  原申请 `4 GPU/120 CPU/240 GiB`，运行 `13:00:54` 后已按要求在同步 barrier 安全
+  停止：seed `5408` 保存 update `1420`、135,439 events、80 episodes；seed `5409`
+  保存 update `1448`、137,389 events、81 episodes。两个 summary 均为
+  `resumable=true`，checkpoint 已验证包含模型、optimizer 和 actor 状态。日志为
   `work_dirs/eval_logs/event_v2_large_sync_full_3296.log`，两个独立输出目录为
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5408/` 和
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。
