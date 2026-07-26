@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aeos_event_v2_large_sync_resume
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=120
-#SBATCH --mem=240G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=70G
 #SBATCH --account=lab_team
 #SBATCH --partition=local-10
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_sync_resume_%j.log
@@ -31,12 +31,12 @@ export MKL_NUM_THREADS=4
 export OPENBLAS_NUM_THREADS=4
 
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
-if (( ${#ALLOCATED_GPUS[@]} < 4 )); then
-  echo "[error] large sync resume requires four allocated GPUs" >&2
+if (( ${#ALLOCATED_GPUS[@]} < 2 )); then
+  echo "[error] large sync resume requires two allocated GPUs" >&2
   exit 1
 fi
-GPU_PAIR_A="${ALLOCATED_GPUS[0]},${ALLOCATED_GPUS[1]}"
-GPU_PAIR_B="${ALLOCATED_GPUS[2]},${ALLOCATED_GPUS[3]}"
+GPU_A="${ALLOCATED_GPUS[0]}"
+GPU_B="${ALLOCATED_GPUS[1]}"
 
 is_accepted() {
   local summary_path="$1"
@@ -61,13 +61,13 @@ if ! is_accepted "${OUTPUT_A}/summary.json"; then
     echo "[error] seed 5408 has no resumable checkpoint" >&2
     exit 1
   fi
-  CUDA_VISIBLE_DEVICES="${GPU_PAIR_A}" \
+  CUDA_VISIBLE_DEVICES="${GPU_A}" \
     "${PYTHON}" tools/train_event_v2_large_sync_ppo.py \
       --config "${CONFIG}" \
       --bootstrap-checkpoint "${BOOTSTRAP}" \
       --seed 5408 \
-      --learner-device cuda:1 \
-      --actor-devices cuda:0 cuda:1 \
+      --learner-device cuda:0 \
+      --actor-devices cuda:0 \
       --actors 12 \
       --active-environments 60 \
       --scene-start 205 \
@@ -88,13 +88,13 @@ if ! is_accepted "${OUTPUT_B}/summary.json"; then
     echo "[error] seed 5409 has no resumable checkpoint" >&2
     exit 1
   fi
-  CUDA_VISIBLE_DEVICES="${GPU_PAIR_B}" \
+  CUDA_VISIBLE_DEVICES="${GPU_B}" \
     "${PYTHON}" tools/train_event_v2_large_sync_ppo.py \
       --config "${CONFIG}" \
       --bootstrap-checkpoint "${BOOTSTRAP}" \
       --seed 5409 \
-      --learner-device cuda:1 \
-      --actor-devices cuda:0 cuda:1 \
+      --learner-device cuda:0 \
+      --actor-devices cuda:0 \
       --actors 12 \
       --active-environments 60 \
       --scene-start 205 \
