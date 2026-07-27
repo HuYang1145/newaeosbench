@@ -128,7 +128,8 @@ def test_large_sync_full_uses_two_seeds_and_one_gpu_per_seed() -> None:
     assert os.access(FULL, os.X_OK)
 
 
-def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
+def test_large_sync_resume_uses_each_seed_safe_checkpoint_without_restarting(
+) -> None:
     script = RESUME.read_text()
 
     assert '#SBATCH --partition=local-10' in script
@@ -139,8 +140,10 @@ def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
     assert '#SBATCH --signal=B:USR1@300' in script
     assert 'seed_5408/checkpoint_latest.pth' in script
     assert 'seed_5409/checkpoint_latest.pth' in script
-    assert 'RESUME_A="${RESUME_A:-${LATEST_A}}"' in script
-    assert 'RESUME_B="${RESUME_B:-${LATEST_B}}"' in script
+    assert 'seed_5408/checkpoint_safe_resume.pth' in script
+    assert 'seed_5409/checkpoint_safe_resume.pth' in script
+    assert 'RESUME_A="${RESUME_A:-${SAFE_A}}"' in script
+    assert 'RESUME_B="${RESUME_B:-${SAFE_B}}"' in script
     assert '--resume "${resume_checkpoint}"' in script
     assert '--max-updates 100000' in script
     assert '--checkpoint-every-updates 100' in script

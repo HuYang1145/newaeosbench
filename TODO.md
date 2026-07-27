@@ -497,10 +497,29 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
     保存了 2 张可见 GPU 的 CUDA RNG 状态、而恢复子进程只看见 1 张 GPU，触发
     `IndexError: tuple index out of range`；旧依赖 jobs `3553–3556` 随后取消。RNG
     恢复逻辑已改为只恢复当前可见 GPU 数量内的状态，并用两个真实 checkpoint 在
-    单 GPU 可见条件下完成 learner 与 actor 恢复验证。当前链为 resume job `4242` →
-    train-heldout job `4243` → Val 8+8 gate job `4244` → 完整 Val job `4245` →
-    唯一一次 Test job `4246`；全部作业均申请 `2 GPU/72 CPU/70 GiB` 并继续使用
-    严格 `afterok`。
+    单 GPU 可见条件下完成 learner 与 actor 恢复验证。resume job `4242` 在训练尾部
+    因部分 actor 先完成场景，分别形成 `58/61 < 64` events 的非终止小 batch；旧逻辑
+    误把这种正常的 actor 缩减当成致命错误，旧依赖 jobs `4243–4246` 已取消。提交
+    `0a8194c` 已改为在同一 policy version 下由剩余 actor 补采并聚合到至少 64 events，
+    只有全部场景完成后的最终残余 batch 才允许跳过；异常期间也禁止保存含未消费
+    events 的 checkpoint。相关同步、checkpoint、训练入口和 Slurm 回归为
+    `52 passed`。首次修复链 job `4270` 又暴露提交 shell 继承的 `RLIMIT_NOFILE=1024`，
+    两个 learner 均在共享模型约 942 个 storage 后达到 `fd_count=1024/1024`；该链
+    jobs `4270–4274` 已取消，提交 `05fd739` 在正式训练 wrapper 中把软上限提高到
+    Slurm 允许的 `65536`。当前链为从两个
+    `checkpoint_update_001600.pth` 恢复的 job `4275` → train-heldout job `4276` →
+    Val 8+8 gate job `4277` → 完整 Val job `4278` → 唯一一次 Test job `4279`；
+    全部作业均申请 `2 GPU/72 CPU/70 GiB` 并继续使用严格 `afterok`。job `4275`
+    已在 `server-10` 启动，两个 learner 的实际 open-files 软/硬上限均为 `65536`。
+    seed `5408` 已在旧故障点用同一个 behavior policy `1608` 完成两轮补采：第一轮
+    `60` events、剩余 7 个 actor 每个再补 1 event，最终以 `67` events 只执行一次
+    update `1609`；`replay_max_abs_error=0`，随后已继续超过 update `1620`。seed
+    `5409` 也已继续超过 update `1620`，当前无 Python 异常。为防止将来误用旧故障
+    产生的 `checkpoint_latest.pth`，两个 seed 目录已增加
+    `checkpoint_safe_resume.pth`，当前与永久 update `1600` checkpoint 为同一 inode；
+    新代码只会在没有待消费 events 的安全 barrier 更新该指针，恢复脚本默认只读
+    safe pointer，临时 `RESUME_A/RESUME_B` 仍可用于明确覆盖。补充负向协议测试后，
+    相关回归为 `56 passed`。
 
 ### 成功门槛与资源预算
 
@@ -522,8 +541,9 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   `work_dirs/eval_logs/event_v2_large_sync_full_3296.log`，两个独立输出目录为
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5408/` 和
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。当前共享资源
-  续训为 job `4242`，单次 `TimeLimit=06:00:00`；日志为
-  `work_dirs/eval_logs/event_v2_large_sync_resume_4242.log`。
+  当前续训为 job `4275`，单次 `TimeLimit=06:00:00`；日志为
+  `work_dirs/eval_logs/event_v2_large_sync_resume_4275.log`，两个 seed 子日志为
+  `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_{5408,5409}/resume_4275.log`。
 - [x] 总训练时间不设人为上限，但单个 Slurm 训练 job 限制为 6 小时；结束前 5 分钟
   由 batch shell 向两个主训练进程转发 `USR1`，在同步 barrier 原子保存 checkpoint，
   不直接终止 actor。每 `100` 次 update 永久保留一个恢复点，同时维护

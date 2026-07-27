@@ -226,6 +226,123 @@ def test_sync_update_accumulator_tops_up_after_one_actor_finishes() -> None:
     assert accumulator.completed_scene_ids == (700,)
 
 
+@pytest.mark.parametrize(
+    ('round_id', 'policy_version', 'message'),
+    [
+        (4, 8, 'mixed policy version'),
+        (5, 7, 'not consecutive'),
+    ],
+)
+def test_sync_update_accumulator_rejects_policy_or_round_drift(
+    round_id: int,
+    policy_version: int,
+    message: str,
+) -> None:
+    accumulator = distributed_sync.StrictSyncUpdateAccumulator(
+        policy_version=7,
+        min_batch_events=64,
+    )
+    accumulator.add(validate_and_merge_sync_round(
+        [_chunk(0, events=8, completed_scene_ids=())],
+        expected_actor_ids=(0,),
+        round_id=3,
+        policy_version=7,
+        min_batch_events=64,
+    ))
+    next_batch = validate_and_merge_sync_round(
+        [
+            _chunk(
+                0,
+                round_id=round_id,
+                policy_version=policy_version,
+                events=1,
+                environment_offset=1000,
+                completed_scene_ids=(),
+            ),
+        ],
+        expected_actor_ids=(0,),
+        round_id=round_id,
+        policy_version=policy_version,
+        min_batch_events=64,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        accumulator.add(next_batch)
+
+
+def test_sync_update_accumulator_rejects_actor_growth() -> None:
+    accumulator = distributed_sync.StrictSyncUpdateAccumulator(
+        policy_version=7,
+        min_batch_events=64,
+    )
+    accumulator.add(validate_and_merge_sync_round(
+        [_chunk(0, events=8, completed_scene_ids=())],
+        expected_actor_ids=(0,),
+        round_id=3,
+        policy_version=7,
+        min_batch_events=64,
+    ))
+    grown = validate_and_merge_sync_round(
+        [
+            _chunk(
+                actor_id,
+                round_id=4,
+                events=1,
+                environment_offset=1000 + actor_id * 100,
+                completed_scene_ids=(),
+            )
+            for actor_id in (0, 1)
+        ],
+        expected_actor_ids=(0, 1),
+        round_id=4,
+        policy_version=7,
+        min_batch_events=64,
+    )
+
+    with pytest.raises(ValueError, match='only shrink'):
+        accumulator.add(grown)
+
+
+def test_sync_update_accumulator_rejects_cross_round_transition_duplicate(
+) -> None:
+    accumulator = distributed_sync.StrictSyncUpdateAccumulator(
+        policy_version=7,
+        min_batch_events=64,
+    )
+    accumulator.add(validate_and_merge_sync_round(
+        [
+            _chunk(
+                0,
+                events=1,
+                environment_offset=0,
+                completed_scene_ids=(),
+            ),
+        ],
+        expected_actor_ids=(0,),
+        round_id=3,
+        policy_version=7,
+        min_batch_events=64,
+    ))
+    duplicate = validate_and_merge_sync_round(
+        [
+            _chunk(
+                0,
+                round_id=4,
+                events=1,
+                environment_offset=0,
+                completed_scene_ids=(),
+            ),
+        ],
+        expected_actor_ids=(0,),
+        round_id=4,
+        policy_version=7,
+        min_batch_events=64,
+    )
+
+    with pytest.raises(ValueError, match='duplicate rollout transition'):
+        accumulator.add(duplicate)
+
+
 def test_round_coordinator_blocks_advance_until_every_actor_arrives() -> None:
     coordinator = StrictSyncRoundCoordinator(
         actor_ids=(0, 1),

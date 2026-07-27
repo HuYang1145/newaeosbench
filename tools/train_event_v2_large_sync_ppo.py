@@ -1044,6 +1044,10 @@ def run_real_training(
             source=path,
             latest=output_dir / 'checkpoint_latest.pth',
         )
+        update_latest_checkpoint(
+            source=path,
+            latest=output_dir / 'checkpoint_safe_resume.pth',
+        )
         latest_checkpoint = path
         return path
 
