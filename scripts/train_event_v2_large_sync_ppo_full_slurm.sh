@@ -11,6 +11,7 @@
 #SBATCH --output=/home/hy/data/newaeosbench/work_dirs/eval_logs/event_v2_large_sync_full_%j.log
 
 set -euo pipefail
+ulimit -n 65536
 
 ROOT_DIR="${SLURM_SUBMIT_DIR:-/home/hy/data/newaeosbench}"
 PYTHON="/home/hy/miniconda3/envs/aeos/bin/python"

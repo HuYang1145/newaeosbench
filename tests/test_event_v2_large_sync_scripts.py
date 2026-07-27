@@ -81,6 +81,7 @@ def test_large_sync_formal_jobs_share_server_resources(
 ) -> None:
     script = script_path.read_text()
 
+    assert 'ulimit -n 65536' in script
     assert '#SBATCH --partition=local-10' in script
     assert '#SBATCH --account=lab_team' in script
     assert '#SBATCH --gres=gpu:2' in script
