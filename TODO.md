@@ -493,9 +493,14 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
     完整 Val job `3308` → 唯一一次 Test job `3309`。任一作业或门槛失败，后续作业
     均不会启动。2026-07-26 按共享资源要求安全暂停 job `3296` 后，旧依赖 jobs
     `3306–3309` 已取消。首个共享资源链 jobs `3532–3536` 尚未运行，又因训练单次
-    时限调整为 6 小时而取消。当前链为 resume job `3551` → train-heldout job
-    `3553` → Val 8+8 gate job `3554` → 完整 Val job `3555` → 唯一一次 Test job
-    `3556`；全部作业均申请 `2 GPU/72 CPU/70 GiB` 并继续使用严格 `afterok`。
+    时限调整为 6 小时而取消。resume job `3551` 在 2026-07-26 启动后因 checkpoint
+    保存了 2 张可见 GPU 的 CUDA RNG 状态、而恢复子进程只看见 1 张 GPU，触发
+    `IndexError: tuple index out of range`；旧依赖 jobs `3553–3556` 随后取消。RNG
+    恢复逻辑已改为只恢复当前可见 GPU 数量内的状态，并用两个真实 checkpoint 在
+    单 GPU 可见条件下完成 learner 与 actor 恢复验证。当前链为 resume job `4242` →
+    train-heldout job `4243` → Val 8+8 gate job `4244` → 完整 Val job `4245` →
+    唯一一次 Test job `4246`；全部作业均申请 `2 GPU/72 CPU/70 GiB` 并继续使用
+    严格 `afterok`。
 
 ### 成功门槛与资源预算
 
@@ -517,8 +522,8 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   `work_dirs/eval_logs/event_v2_large_sync_full_3296.log`，两个独立输出目录为
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5408/` 和
   `work_dirs/event_joint_transformer_v2/v2_2_large_sync_ppo/seed_5409/`。当前共享资源
-  续训为 job `3551`，单次 `TimeLimit=06:00:00`；日志为
-  `work_dirs/eval_logs/event_v2_large_sync_resume_3551.log`。
+  续训为 job `4242`，单次 `TimeLimit=06:00:00`；日志为
+  `work_dirs/eval_logs/event_v2_large_sync_resume_4242.log`。
 - [x] 总训练时间不设人为上限，但单个 Slurm 训练 job 限制为 6 小时；结束前 5 分钟
   由 batch shell 向两个主训练进程转发 `USR1`，在同步 barrier 原子保存 checkpoint，
   不直接终止 actor。每 `100` 次 update 永久保留一个恢复点，同时维护
