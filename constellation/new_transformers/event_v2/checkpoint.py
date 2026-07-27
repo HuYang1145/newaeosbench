@@ -70,7 +70,9 @@ def restore_rng_state(state: Mapping[str, Any]) -> None:
     np.random.set_state(state['numpy'])
     torch.set_rng_state(state['torch'])
     if torch.cuda.is_available() and state['cuda']:
-        torch.cuda.set_rng_state_all(state['cuda'])
+        cuda_states = state['cuda'][:torch.cuda.device_count()]
+        if cuda_states:
+            torch.cuda.set_rng_state_all(cuda_states)
 
 
 def save_checkpoint_atomic(

@@ -371,9 +371,11 @@ def restore_rng_state(state: Mapping[str, Any]) -> None:
             raise RuntimeError(
                 'CUDA RNG state cannot be restored without CUDA',
             )
-        torch.cuda.set_rng_state_all(
-            [value.cpu() for value in cuda_states],
-        )
+        visible_cuda_states = cuda_states[:torch.cuda.device_count()]
+        if visible_cuda_states:
+            torch.cuda.set_rng_state_all(
+                [value.cpu() for value in visible_cuda_states],
+            )
 
 
 class QueuedEventRuntimePool:

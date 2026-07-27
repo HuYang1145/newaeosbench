@@ -9,9 +9,11 @@ import torch
 
 from constellation.new_transformers.event_v2.checkpoint import (
     config_fingerprint,
+    restore_rng_state as restore_learner_rng_state,
 )
 from constellation.new_transformers.event_v2.distributed_sync import (
     capture_rng_state,
+    restore_rng_state as restore_actor_rng_state,
 )
 from constellation.new_transformers.event_v2.large_sync_checkpoint import (
     LargeSyncCounters,
@@ -100,6 +102,37 @@ def _actor_states():
             'rng': capture_rng_state(),
         },
     }
+
+
+@pytest.mark.parametrize(
+    'restore_rng_state',
+    [restore_learner_rng_state, restore_actor_rng_state],
+)
+def test_rng_restore_uses_only_states_for_visible_cuda_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    restore_rng_state,
+) -> None:
+    restored_cuda_states = []
+    first_cuda_state = torch.tensor([1], dtype=torch.uint8)
+    second_cuda_state = torch.tensor([2], dtype=torch.uint8)
+    state = {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch': torch.get_rng_state(),
+        'cuda': (first_cuda_state, second_cuda_state),
+    }
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda,
+        'set_rng_state_all',
+        lambda values: restored_cuda_states.extend(values),
+    )
+
+    restore_rng_state(state)
+
+    assert len(restored_cuda_states) == 1
+    torch.testing.assert_close(restored_cuda_states[0], first_cuda_state)
 
 
 def _payload():
