@@ -548,3 +548,48 @@ policy version；每轮收集结束后统一更新并广播新权重，不产生
   由 batch shell 向两个主训练进程转发 `USR1`，在同步 barrier 原子保存 checkpoint，
   不直接终止 actor。每 `100` 次 update 永久保留一个恢复点，同时维护
   `checkpoint_latest.pth`，但不得用 latest 覆盖周期 checkpoint。
+
+## 下一阶段候选：完成率课程学习（方案 A）
+
+定位约束：
+
+- 候选主指标为 `Q_completion = 0.8*CR + 0.2*PCR`，只用于下一阶段课程实验的
+  checkpoint 排序候选，不追溯修改历史实验，也不替换当前论文
+  `Q=0.6*CR+0.2*PCR+0.2*WCR` 验收协议。
+- 当前 job `4276` 及依赖链 `4277–4279` 继续使用论文 Q 和已经登记的 Gate；截至
+  2026-07-27 本次记录时，`4276` 仍在运行，后续作业仍等待严格依赖。
+- 课程 PPO 的起点优先使用通过 `4277` Gate 的 V2-Large checkpoint；如果 Gate
+  失败，则回退到已验证的 V2-2 selected checkpoint。静态场景生成完成不代表 PPO
+  已训练，更不代表模型指标已经提高。
+
+已完成的静态数据准备：
+
+- [x] 生成 `curriculum_600`：128 个场景，seed `3407`，每场 1–5 颗卫星、
+  10–50 个任务；训练 scene `0–119`，阶段内 held-out scene `120–127`。
+- [x] 生成 `curriculum_1800`：128 个场景，seed `3408`，每场 5–15 颗卫星、
+  25–150 个任务；训练 scene `0–119`，阶段内 held-out scene `120–127`。
+- [x] 独立加载并检查全部 512 个星座/任务 JSON；两种时域的 ID、任务时间窗、数量
+  范围均正确，且 `BasiliskSceneBackend` 可正常初始化 scene 0。
+- [x] 生成前后正式 `train/val_seen/val_unseen/test` 的星座和任务文件数完全一致；
+  没有额外生成 3600 秒场景，也没有修改现有正式数据。
+
+数据与证据路径：
+
+- `data/constellations/curriculum_{600,1800}/`
+- `data/tasksets/curriculum_{600,1800}/`
+- `work_dirs/curriculum_scenes/curriculum_{600,1800}/metadata.json`
+- `tools/generate_curriculum_scenes.py`
+- `docs/superpowers/specs/2026-07-27-completion-curriculum-scenes-design.md`
+- `docs/superpowers/plans/2026-07-27-completion-curriculum-scenes.md`
+
+后续执行项（本次不启动）：
+
+- [ ] 锁定课程训练起点 checkpoint，不根据课程 held-out 结果反复更换基础模型。
+- [ ] 在 `curriculum_600` scene `0–119` 运行第一阶段 PPO，仅用 `120–127` 做一次
+  阶段选择，并同时完整记录 `CR/PCR/WCR/TAT_s/PC_Wh/CS_paper`。
+- [ ] 600 秒阶段通过预注册门槛后，在 `curriculum_1800` scene `0–119` 继续训练，
+  再用 `120–127` 做一次阶段选择。
+- [ ] 1800 秒阶段通过后，复用现有 3600 秒训练场景继续训练，不新生成一套 3600 秒
+  数据。
+- [ ] 课程阶段全部锁定后，才进入正式 Val Seen/Unseen 和 Test；正式结果继续同时
+  报告论文 Q、`Q_completion` 及所有原始指标。
