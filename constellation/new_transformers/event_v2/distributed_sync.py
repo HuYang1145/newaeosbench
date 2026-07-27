@@ -338,6 +338,117 @@ class StrictSyncRoundCoordinator:
         self._finalized = None
 
 
+class StrictSyncUpdateAccumulator:
+    """聚合同一 policy version 的连续同步轮次，供一次 learner update 使用。"""
+
+    def __init__(
+        self,
+        *,
+        policy_version: int,
+        min_batch_events: int,
+    ) -> None:
+        if policy_version < 0 or min_batch_events <= 0:
+            raise ValueError('sync update accumulator boundaries are invalid')
+        self._policy_version = int(policy_version)
+        self._min_batch_events = int(min_batch_events)
+        self._batches: list[SyncRoundBatch] = []
+        self._steps: list[StoredEventStep] = []
+        self._transition_ids: set[tuple[int, int, int]] = set()
+        self._completed_scene_ids: set[int] = set()
+
+    @property
+    def policy_version(self) -> int:
+        return self._policy_version
+
+    @property
+    def collection_rounds(self) -> int:
+        return len(self._batches)
+
+    @property
+    def event_count(self) -> int:
+        return len(self._steps)
+
+    @property
+    def should_update(self) -> bool:
+        return self.event_count >= self._min_batch_events
+
+    @property
+    def steps(self) -> tuple[StoredEventStep, ...]:
+        return tuple(self._steps)
+
+    @property
+    def completed_scene_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._completed_scene_ids))
+
+    @property
+    def processed_physical_seconds(self) -> float:
+        return sum(
+            batch.processed_physical_seconds for batch in self._batches
+        )
+
+    @property
+    def replay_max_abs_error(self) -> float:
+        return max(
+            (batch.replay_max_abs_error for batch in self._batches),
+            default=0.0,
+        )
+
+    @property
+    def round_event_counts(self) -> tuple[int, ...]:
+        return tuple(batch.event_count for batch in self._batches)
+
+    def target_events_per_actor(
+        self,
+        *,
+        active_actor_count: int,
+        default_target_events: int,
+    ) -> int:
+        """首轮遵循预注册 chunk，补采轮只均分尚缺 events。"""
+
+        if active_actor_count <= 0 or default_target_events <= 0:
+            raise ValueError('sync update target boundaries are invalid')
+        remaining = self._min_batch_events - self.event_count
+        if remaining <= 0:
+            raise RuntimeError('sync update batch is already complete')
+        target = math.ceil(remaining / active_actor_count)
+        if not self._batches:
+            target = max(default_target_events, target)
+        return max(target, 1)
+
+    def add(self, batch: SyncRoundBatch) -> None:
+        """追加连续轮次；actor 集合只允许随场景完成而缩小。"""
+
+        if batch.policy_version != self._policy_version:
+            raise ValueError('sync update batch has a mixed policy version')
+        if self._batches:
+            previous = self._batches[-1]
+            if batch.round_id != previous.round_id + 1:
+                raise ValueError('sync update batch rounds are not consecutive')
+            if not set(batch.actor_ids).issubset(previous.actor_ids):
+                raise ValueError('sync update actor set may only shrink')
+        for step in batch.steps:
+            transition_id = (
+                int(step.environment_index),
+                int(step.episode_id),
+                int(step.event_index),
+            )
+            if transition_id in self._transition_ids:
+                raise ValueError(
+                    'sync update contains a duplicate rollout transition',
+                )
+            self._transition_ids.add(transition_id)
+        repeated_scenes = (
+            self._completed_scene_ids & set(batch.completed_scene_ids)
+        )
+        if repeated_scenes:
+            raise ValueError(
+                'sync update contains duplicate completed scenes',
+            )
+        self._completed_scene_ids.update(batch.completed_scene_ids)
+        self._steps.extend(batch.steps)
+        self._batches.append(batch)
+
+
 def capture_rng_state() -> dict[str, Any]:
     """捕获 actor 断点续训需要的所有随机数状态。"""
 

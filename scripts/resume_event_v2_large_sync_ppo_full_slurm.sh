@@ -21,6 +21,8 @@ OUTPUT_A="${BASE_OUTPUT}/seed_5408"
 OUTPUT_B="${BASE_OUTPUT}/seed_5409"
 LATEST_A="${BASE_OUTPUT}/seed_5408/checkpoint_latest.pth"
 LATEST_B="${BASE_OUTPUT}/seed_5409/checkpoint_latest.pth"
+RESUME_A="${RESUME_A:-${LATEST_A}}"
+RESUME_B="${RESUME_B:-${LATEST_B}}"
 
 cd "${ROOT_DIR}"
 export PATH="/home/hy/miniconda3/envs/aeos/bin:${PATH}"
@@ -74,7 +76,7 @@ trap checkpoint_before_timeout USR1
 
 labels=()
 if ! is_accepted "${OUTPUT_A}/summary.json"; then
-  resume_checkpoint="${LATEST_A}"
+  resume_checkpoint="${RESUME_A}"
   if [[ ! -f "${resume_checkpoint}" ]]; then
     echo "[error] seed 5408 has no resumable checkpoint" >&2
     exit 1
@@ -101,7 +103,7 @@ if ! is_accepted "${OUTPUT_A}/summary.json"; then
 fi
 
 if ! is_accepted "${OUTPUT_B}/summary.json"; then
-  resume_checkpoint="${LATEST_B}"
+  resume_checkpoint="${RESUME_B}"
   if [[ ! -f "${resume_checkpoint}" ]]; then
     echo "[error] seed 5409 has no resumable checkpoint" >&2
     exit 1

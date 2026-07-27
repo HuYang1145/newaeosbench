@@ -7,7 +7,6 @@ import argparse
 from collections.abc import Mapping, Sequence
 import copy
 import json
-import math
 import pathlib
 import queue
 import random
@@ -40,6 +39,7 @@ from constellation.new_transformers.event_v2.checkpoint import (
 from constellation.new_transformers.event_v2.distributed_sync import (
     QueuedEventRuntimePool,
     StrictSyncRoundCoordinator,
+    StrictSyncUpdateAccumulator,
     SyncActorChunk,
     SyncActorDone,
     SyncRoundCommand,
@@ -985,9 +985,14 @@ def run_real_training(
     latest_checkpoint: pathlib.Path | None = None
     interrupted = False
     failure: BaseException | None = None
+    pending_update_events = 0
 
     def save_at_barrier(*, final: bool) -> pathlib.Path:
         nonlocal latest_checkpoint
+        if pending_update_events:
+            raise RuntimeError(
+                'cannot checkpoint with unconsumed strict sync events',
+            )
         if set(actor_states) != set(assignments):
             raise RuntimeError(
                 'cannot checkpoint before every actor has a barrier state',
@@ -1042,142 +1047,176 @@ def run_real_training(
         latest_checkpoint = path
         return path
 
+    def collect_sync_round(
+        *,
+        round_actor_ids: set[int],
+        target_events_per_actor: int,
+    ):
+        coordinator = StrictSyncRoundCoordinator(
+            actor_ids=round_actor_ids,
+            initial_round_id=counters.next_round_id,
+            initial_policy_version=trainer.policy_version,
+        )
+        for actor_id in sorted(round_actor_ids):
+            command = coordinator.command_for(actor_id)
+            command_queues[actor_id].put(SyncRoundCommand(
+                round_id=command.round_id,
+                policy_version=command.policy_version,
+                target_events=target_events_per_actor,
+            ))
+
+        done_messages: dict[int, SyncActorDone] = {}
+        inferred_done: set[int] = set()
+        while (
+            len(coordinator.submitted_actor_ids) < len(round_actor_ids)
+            or not inferred_done.issubset(done_messages)
+        ):
+            try:
+                message = result_queue.get(timeout=60)
+            except queue.Empty:
+                dead = {
+                    actor_id: process.exitcode
+                    for actor_id, process in processes.items()
+                    if (
+                        actor_id in round_actor_ids
+                        and not process.is_alive()
+                    )
+                }
+                if dead:
+                    raise RuntimeError(
+                        f'large sync actors exited without results: {dead}',
+                    )
+                print(json.dumps({
+                    'stage': 'V2-2-Large',
+                    'heartbeat': True,
+                    'round': counters.next_round_id,
+                    'waiting_for_actors': sorted(
+                        round_actor_ids
+                        - set(coordinator.submitted_actor_ids)
+                    ),
+                }, sort_keys=True), flush=True)
+                continue
+            if isinstance(message, SyncWorkerError):
+                raise RuntimeError(
+                    f'large sync actor {message.actor_id} failed with '
+                    f'{message.error_type}: {message.message}\n'
+                    f'{message.traceback}',
+                )
+            if isinstance(message, SyncActorChunk):
+                coordinator.submit(message)
+                actor_states[message.actor_id] = message.state
+                completed_scene_ids.update(message.completed_scene_ids)
+                if _pool_state_is_complete(
+                    message.state,
+                    assigned_scene_ids=assignments[message.actor_id],
+                ):
+                    inferred_done.add(message.actor_id)
+                continue
+            if isinstance(message, SyncActorDone):
+                if (
+                    message.round_id != counters.next_round_id
+                    or message.policy_version != trainer.policy_version
+                ):
+                    raise ValueError(
+                        'large sync done message has stale identifiers',
+                    )
+                done_messages[message.actor_id] = message
+                actor_states[message.actor_id] = message.state
+                reward_errors.update(
+                    dict(message.reward_reconstruction_errors),
+                )
+                continue
+            raise TypeError(
+                f'unknown large sync actor message: {type(message)!r}',
+            )
+
+        return (
+            coordinator.finalize(
+                min_batch_events=int(config['min_update_events']),
+            ),
+            inferred_done,
+        )
+
     try:
         while active_actor_ids and counters.updates < max_updates:
-            target_per_actor = max(
-                int(config['events_per_actor_round']),
-                math.ceil(
-                    int(config['min_update_events'])
-                    / len(active_actor_ids)
-                ),
-            )
-            coordinator = StrictSyncRoundCoordinator(
-                actor_ids=active_actor_ids,
-                initial_round_id=counters.next_round_id,
-                initial_policy_version=trainer.policy_version,
-            )
-            for actor_id in sorted(active_actor_ids):
-                command = coordinator.command_for(actor_id)
-                command_queues[actor_id].put(SyncRoundCommand(
-                    round_id=command.round_id,
-                    policy_version=command.policy_version,
-                    target_events=target_per_actor,
-                ))
-
-            done_messages: dict[int, SyncActorDone] = {}
-            inferred_done: set[int] = set()
-            while (
-                len(coordinator.submitted_actor_ids)
-                < len(active_actor_ids)
-                or not inferred_done.issubset(done_messages)
-            ):
-                try:
-                    message = result_queue.get(timeout=60)
-                except queue.Empty:
-                    dead = {
-                        actor_id: process.exitcode
-                        for actor_id, process in processes.items()
-                        if (
-                            actor_id in active_actor_ids
-                            and not process.is_alive()
-                        )
-                    }
-                    if dead:
-                        raise RuntimeError(
-                            f'large sync actors exited without results: {dead}',
-                        )
-                    print(json.dumps({
-                        'stage': 'V2-2-Large',
-                        'heartbeat': True,
-                        'round': counters.next_round_id,
-                        'waiting_for_actors': sorted(
-                            set(active_actor_ids)
-                            - set(coordinator.submitted_actor_ids)
-                        ),
-                    }, sort_keys=True), flush=True)
-                    continue
-                if isinstance(message, SyncWorkerError):
-                    raise RuntimeError(
-                        f'large sync actor {message.actor_id} failed with '
-                        f'{message.error_type}: {message.message}\n'
-                        f'{message.traceback}',
-                    )
-                if isinstance(message, SyncActorChunk):
-                    coordinator.submit(message)
-                    actor_states[message.actor_id] = message.state
-                    completed_scene_ids.update(
-                        message.completed_scene_ids,
-                    )
-                    if _pool_state_is_complete(
-                        message.state,
-                        assigned_scene_ids=assignments[
-                            message.actor_id
-                        ],
-                    ):
-                        inferred_done.add(message.actor_id)
-                    continue
-                if isinstance(message, SyncActorDone):
-                    if (
-                        message.round_id != counters.next_round_id
-                        or message.policy_version
-                        != trainer.policy_version
-                    ):
-                        raise ValueError(
-                            'large sync done message has stale identifiers',
-                        )
-                    done_messages[message.actor_id] = message
-                    actor_states[message.actor_id] = message.state
-                    reward_errors.update(
-                        dict(message.reward_reconstruction_errors),
-                    )
-                    continue
-                raise TypeError(
-                    f'unknown large sync actor message: {type(message)!r}',
-                )
-
-            batch = coordinator.finalize(
+            active_actors_at_update_start = len(active_actor_ids)
+            first_round_id = counters.next_round_id
+            targets_per_collection_round: list[int] = []
+            update_batch = StrictSyncUpdateAccumulator(
+                policy_version=trainer.policy_version,
                 min_batch_events=int(config['min_update_events']),
             )
-            replay_max_error = max(
-                replay_max_error,
-                batch.replay_max_abs_error,
-            )
-            next_round_id = counters.next_round_id + 1
-            counters = LargeSyncCounters(
-                next_round_id=next_round_id,
-                updates=counters.updates,
-                policy_version=trainer.policy_version,
-                processed_physical_seconds=(
-                    counters.processed_physical_seconds
-                    + int(batch.processed_physical_seconds)
-                ),
-                episodes=len(completed_scene_ids),
-                events=counters.events + batch.event_count,
-            )
+            while active_actor_ids and not update_batch.should_update:
+                target_per_actor = update_batch.target_events_per_actor(
+                    active_actor_count=len(active_actor_ids),
+                    default_target_events=int(
+                        config['events_per_actor_round'],
+                    ),
+                )
+                targets_per_collection_round.append(target_per_actor)
+                round_actor_ids = set(active_actor_ids)
+                pending_update_events = -1
+                batch, inferred_done = collect_sync_round(
+                    round_actor_ids=round_actor_ids,
+                    target_events_per_actor=target_per_actor,
+                )
+                update_batch.add(batch)
+                pending_update_events = update_batch.event_count
+                replay_max_error = max(
+                    replay_max_error,
+                    batch.replay_max_abs_error,
+                )
+                active_actor_ids -= inferred_done
+                counters = LargeSyncCounters(
+                    next_round_id=counters.next_round_id + 1,
+                    updates=counters.updates,
+                    policy_version=trainer.policy_version,
+                    processed_physical_seconds=(
+                        counters.processed_physical_seconds
+                        + int(batch.processed_physical_seconds)
+                    ),
+                    episodes=len(completed_scene_ids),
+                    events=counters.events + batch.event_count,
+                )
+
             row: dict[str, Any] = {
-                'round': batch.round_id,
-                'behavior_policy_version': batch.policy_version,
-                'events_in_round': batch.event_count,
+                'round': first_round_id,
+                'last_collection_round': counters.next_round_id - 1,
+                'collection_rounds': update_batch.collection_rounds,
+                'top_up_rounds': max(
+                    update_batch.collection_rounds - 1,
+                    0,
+                ),
+                'round_event_counts': update_batch.round_event_counts,
+                'behavior_policy_version': update_batch.policy_version,
+                'events_in_round': update_batch.event_count,
                 'events': counters.events,
                 'physical_seconds': (
                     counters.processed_physical_seconds
                 ),
                 'episodes': counters.episodes,
-                'active_actors': len(active_actor_ids),
-                'target_events_per_actor': target_per_actor,
+                'active_actors': active_actors_at_update_start,
+                'remaining_active_actors': len(active_actor_ids),
+                'target_events_per_actor': (
+                    targets_per_collection_round[0]
+                ),
+                'targets_per_collection_round': (
+                    targets_per_collection_round
+                ),
                 'replay_max_abs_error': (
-                    batch.replay_max_abs_error
+                    update_batch.replay_max_abs_error
                 ),
             }
-            if batch.should_update:
-                update = trainer.update(list(batch.steps))
+            update_performed = update_batch.should_update
+            if update_performed:
+                update = trainer.update(list(update_batch.steps))
                 _step_scheduler_without_restart(scheduler)
                 policy_store.publish(
                     learner_model,
                     version=trainer.policy_version,
                 )
                 counters = LargeSyncCounters(
-                    next_round_id=next_round_id,
+                    next_round_id=counters.next_round_id,
                     updates=counters.updates + 1,
                     policy_version=trainer.policy_version,
                     processed_physical_seconds=(
@@ -1186,6 +1225,7 @@ def run_real_training(
                     episodes=counters.episodes,
                     events=counters.events,
                 )
+                pending_update_events = 0
                 frozen_changes += update.frozen_parameter_changes
                 row.update({
                     'update': counters.updates,
@@ -1213,11 +1253,13 @@ def run_real_training(
                         'gradient_norm',
                     }
                 )
-            elif inferred_done != active_actor_ids:
-                raise RuntimeError(
-                    'large sync produced a small non-terminal batch',
-                )
             else:
+                if active_actor_ids:
+                    raise RuntimeError(
+                        'large sync top-up stopped before reaching '
+                        'the minimum batch size',
+                    )
+                pending_update_events = 0
                 row.update({
                     'update': counters.updates,
                     'policy_version': trainer.policy_version,
@@ -1227,10 +1269,8 @@ def run_real_training(
             with metrics_path.open('a', encoding='utf-8') as file:
                 file.write(json.dumps(row, sort_keys=True) + '\n')
             print(json.dumps(row, sort_keys=True), flush=True)
-            active_actor_ids -= inferred_done
-
             if (
-                batch.should_update
+                update_performed
                 and counters.updates % checkpoint_interval == 0
             ):
                 save_at_barrier(final=False)

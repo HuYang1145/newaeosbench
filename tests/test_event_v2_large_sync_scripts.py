@@ -138,6 +138,8 @@ def test_large_sync_resume_uses_each_seed_latest_without_restarting() -> None:
     assert '#SBATCH --signal=B:USR1@300' in script
     assert 'seed_5408/checkpoint_latest.pth' in script
     assert 'seed_5409/checkpoint_latest.pth' in script
+    assert 'RESUME_A="${RESUME_A:-${LATEST_A}}"' in script
+    assert 'RESUME_B="${RESUME_B:-${LATEST_B}}"' in script
     assert '--resume "${resume_checkpoint}"' in script
     assert '--max-updates 100000' in script
     assert '--checkpoint-every-updates 100' in script

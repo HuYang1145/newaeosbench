@@ -7,6 +7,7 @@ import threading
 import pytest
 import torch
 
+from constellation.new_transformers.event_v2 import distributed_sync
 from constellation.new_transformers.event_v2.appo import SharedPolicyStore
 from constellation.new_transformers.event_v2.distributed_sync import (
     QueuedEventRuntimePool,
@@ -49,6 +50,7 @@ def _chunk(
     policy_version: int = 7,
     events: int = 32,
     environment_offset: int | None = None,
+    completed_scene_ids: tuple[int, ...] | None = None,
 ) -> SyncActorChunk:
     offset = actor_id * 100 if environment_offset is None else environment_offset
     return SyncActorChunk(
@@ -64,7 +66,11 @@ def _chunk(
             )
             for event_index in range(events)
         ),
-        completed_scene_ids=(offset,) if events else (),
+        completed_scene_ids=(
+            ((offset,) if events else ())
+            if completed_scene_ids is None
+            else completed_scene_ids
+        ),
         replay_max_abs_error=5e-7,
         state={'actor_id': actor_id, 'round_id': round_id},
     )
@@ -158,6 +164,66 @@ def test_sync_round_never_updates_from_a_small_final_batch() -> None:
 
     assert batch.event_count == 25
     assert batch.should_update is False
+
+
+def test_sync_update_accumulator_tops_up_after_one_actor_finishes() -> None:
+    accumulator_type = getattr(
+        distributed_sync,
+        'StrictSyncUpdateAccumulator',
+        None,
+    )
+    assert accumulator_type is not None
+    accumulator = accumulator_type(
+        policy_version=7,
+        min_batch_events=64,
+    )
+    first = validate_and_merge_sync_round(
+        [
+            _chunk(
+                actor_id,
+                events=2 if actor_id == 7 else 8,
+                completed_scene_ids=(700,) if actor_id == 7 else (),
+            )
+            for actor_id in range(8)
+        ],
+        expected_actor_ids=range(8),
+        round_id=3,
+        policy_version=7,
+        min_batch_events=64,
+    )
+
+    accumulator.add(first)
+
+    assert accumulator.event_count == 58
+    assert accumulator.should_update is False
+    assert accumulator.target_events_per_actor(
+        active_actor_count=7,
+        default_target_events=8,
+    ) == 1
+
+    top_up = validate_and_merge_sync_round(
+        [
+            _chunk(
+                actor_id,
+                round_id=4,
+                events=1,
+                environment_offset=1000 + actor_id * 100,
+                completed_scene_ids=(),
+            )
+            for actor_id in range(7)
+        ],
+        expected_actor_ids=range(7),
+        round_id=4,
+        policy_version=7,
+        min_batch_events=64,
+    )
+    accumulator.add(top_up)
+
+    assert accumulator.event_count == 65
+    assert accumulator.should_update is True
+    assert len(accumulator.steps) == 65
+    assert accumulator.collection_rounds == 2
+    assert accumulator.completed_scene_ids == (700,)
 
 
 def test_round_coordinator_blocks_advance_until_every_actor_arrives() -> None:
