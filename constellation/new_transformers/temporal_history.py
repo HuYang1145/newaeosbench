@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import torch
 
@@ -70,6 +71,11 @@ def map_previous_tasks(
     else:
         candidate_mask = candidate_mask.to(dtype=torch.bool)
     _validate_candidate_ids(candidate_global_task_ids, candidate_mask)
+    if candidate_global_task_ids.shape[1] == 0:
+        return (
+            torch.full_like(previous_global_task_ids, -1),
+            torch.zeros_like(previous_global_task_ids, dtype=torch.bool),
+        )
 
     matches = (
         previous_global_task_ids.unsqueeze(-1)
@@ -238,3 +244,37 @@ class CausalAssignmentHistory:
         if (assignment < -1).any():
             raise ValueError('global task IDs must be -1 or non-negative')
         self._assignments.append(assignment.clone())
+
+    def state_dict(self) -> dict[str, Any]:
+        if self._assignments:
+            assignments = torch.stack(tuple(self._assignments))
+        else:
+            assignments = torch.empty(
+                0,
+                self._num_satellites,
+                dtype=torch.long,
+            )
+        return {
+            'num_satellites': self._num_satellites,
+            'assignments': assignments,
+        }
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        num_satellites = state_dict.get('num_satellites')
+        assignments = state_dict.get('assignments')
+        if num_satellites != self._num_satellites:
+            raise ValueError('history satellite count does not match')
+        if (
+            not isinstance(assignments, torch.Tensor)
+            or assignments.ndim != 2
+            or assignments.shape[1] != self._num_satellites
+            or assignments.shape[0] > 61
+            or assignments.dtype != torch.long
+            or (assignments < -1).any()
+        ):
+            raise ValueError(
+                'history assignments have an invalid checkpoint shape'
+            )
+        self._assignments.clear()
+        for assignment in assignments:
+            self._assignments.append(assignment.clone().cpu())

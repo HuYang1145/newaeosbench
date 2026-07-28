@@ -1,7 +1,6 @@
 from typing import NamedTuple, TypedDict, cast
 
 import einops
-import todd
 import torch
 from constellation.new_transformers import Model as ActorModel
 from constellation.new_transformers.model import GLOBALS
@@ -174,8 +173,8 @@ class ActorCritic(nn.Module):
         return self.forward_actor(batch), self.forward_critic(batch)
 
     def forward_actor(self, batch: Batch) -> torch.Tensor:
-        if todd.Store.cuda:
-            batch = Batch(*[tensor.cuda() for tensor in batch])
+        device = next(self.actor.parameters()).device
+        batch = Batch(*[tensor.to(device) for tensor in batch])
         logits = self.actor.predict(
             *batch[:8],
             temporal_history=TemporalHistoryTensors(
@@ -198,8 +197,8 @@ class ActorCritic(nn.Module):
         return padding
 
     def forward_critic(self, batch: Batch) -> torch.Tensor:
-        if todd.Store.cuda:
-            batch = Batch(*[tensor.cuda() for tensor in batch])
+        device = next(self.critic.parameters()).device
+        batch = Batch(*[tensor.to(device) for tensor in batch])
         return self.critic(*batch[:8])
 
 

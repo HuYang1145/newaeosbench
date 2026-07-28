@@ -68,6 +68,16 @@ def test_previous_task_mapping_marks_disappeared_and_idle_unavailable() -> None:
     assert available.tolist() == [[False, False, True]]
 
 
+def test_previous_task_mapping_handles_no_current_candidates() -> None:
+    mapped, available = map_previous_tasks(
+        torch.tensor([[8, -1, 3]]),
+        torch.empty(1, 0, dtype=torch.long),
+    )
+
+    assert mapped.tolist() == [[-1, -1, -1]]
+    assert available.tolist() == [[False, False, False]]
+
+
 def test_previous_task_mapping_rejects_duplicate_available_global_ids() -> None:
     try:
         map_previous_tasks(
